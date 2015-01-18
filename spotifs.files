@@ -1,0 +1,11 @@
+src/main.c
+src/fs.c
+src/fs.h
+src/spotify_appkey.h
+Makefile
+src/context.h
+src/logger.h
+src/logger.c
+src/spotify.h
+src/spotify.c
+src/context.c
