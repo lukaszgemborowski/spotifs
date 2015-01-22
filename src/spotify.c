@@ -81,6 +81,67 @@ static void replace_char(char *string, char a, char b)
     }
 }
 
+static void recreate_playlist(struct playlist* playlist)
+{
+    // re-fetch playlist name
+    free (playlist->title);
+    playlist->title = strdup(sp_playlist_name(playlist->spotify_playlist));
+    replace_char(playlist->title, '/', '\\');
+
+    // free already allocated tracks
+    struct track* track = NULL;
+    for (track = playlist->tracks; track != NULL; track = track->next)
+    {
+        // free track title
+        free(track->title);
+
+        // release memory allocated for track
+        free(track);
+    }
+
+    playlist->tracks = NULL;
+
+    // read number of tracks
+    int num_tracks = sp_playlist_num_tracks(playlist->spotify_playlist);
+
+    if (num_tracks > 0)
+    {
+        // allocate first track
+        playlist->tracks = calloc(1, sizeof(struct track));
+        track = playlist->tracks;
+        int i = 0;
+
+        for (i = 0; i < num_tracks; i ++)
+        {
+            sp_track *s_track = sp_playlist_track(playlist->spotify_playlist, i);
+            track->title = strdup(sp_track_name(s_track));
+            track->duration = sp_track_duration(s_track);
+            track->spotify_track = s_track;
+            track->size = 0;
+
+            replace_char(track->title, '/', '\\');
+
+            if (i < num_tracks-1)
+            {
+                track->next = calloc(1, sizeof(struct track));
+                track = track->next;
+            }
+        }
+    }
+}
+
+void sp_cb_playlist_metadata_updated(sp_playlist *pl, void *userdata)
+{
+    (void *)pl;
+    // forward call to recreate_playlist, basically we need to refresh all
+    // playlist data, including tracks
+    recreate_playlist(userdata);
+}
+
+static sp_playlist_callbacks pl_callbacks = {
+    .playlist_metadata_updated = &sp_cb_playlist_metadata_updated
+};
+
 static void initialize_playlists(sp_playlistcontainer *container)
 {
     struct spotifs_context* ctx = get_global_context;
@@ -97,49 +158,20 @@ static void initialize_playlists(sp_playlistcontainer *container)
     sp_user_playlists = calloc(1, sizeof(struct playlist));
     struct playlist *current_playlist = sp_user_playlists;
 
-    int i, j;
+    int i = 0;
     for (i = 0; i < num_playlists; ++i)
     {
         // fetch playlist from spotify
         sp_playlist *playlist =	sp_playlistcontainer_playlist (container, i);
 
-        // fetch number of tracks per list
-        int num_tracks = sp_playlist_num_tracks(playlist);
+        // save spotify playlist
+        current_playlist->spotify_playlist = playlist;
 
-        // copy playlist name
-        current_playlist->title = strdup(sp_playlist_name(playlist));
-        replace_char(current_playlist->title, '/', '\\');
+        // recreate playlist
+        recreate_playlist(current_playlist);
 
-        if (num_tracks)
-        {
-            // allocate first track
-            current_playlist->tracks = calloc(1, sizeof(struct track));
-            struct track* current_track = current_playlist->tracks;
-
-            for (j = 0; j < num_tracks; ++j)
-            {
-                sp_track *track = sp_playlist_track(playlist, j);
-                current_track->title = strdup(sp_track_name(track));
-                current_track->duration = sp_track_duration(track);
-                current_track->spotify_track = track;
-                current_track->size = 0;
-
-                replace_char(current_track->title, '/', '\\');
-
-                if (j < num_tracks-1)
-                {
-                    current_track->next = calloc(1, sizeof(struct track));
-                    current_track = current_track->next;
-                }
-
-                // TODO: do proper cleanup of resources!!!!!
-                //sp_track_release(track);
-            }
-        }
-        else
-        {
-            current_playlist->tracks = NULL;
-        }
+        // register callbacks
+        sp_playlist_add_callbacks(playlist, &pl_callbacks, current_playlist);
 
         // allocate next playlist
         if (i < num_playlists-1)
@@ -148,7 +180,8 @@ static void initialize_playlists(sp_playlistcontainer *container)
             current_playlist = current_playlist->next;
         }
 
-        sp_playlist_release(playlist);
+        // TODO: release
+        // sp_cb_playlist_metadata_updated
     }
 
 }
@@ -230,22 +263,25 @@ static void sp_cb_notify_main_thread(sp_session *session)
     pthread_mutex_unlock(&mainloop_mutex);
 }
 
-
-static int estimated_bps = 0;
+static struct track* g_current_track = NULL;
 
 int sp_cb_music_delivery(sp_session *session, const sp_audioformat *format, const void *frames, int num_frames)
 {
     struct spotifs_context *ctx = get_global_context;
-    logger_message(ctx, "sp_cb_music_delivery: enter\n");
+    //logger_message(ctx, "sp_cb_music_delivery: enter channels: %d, sample_rate: %d\n", format->channels, format->sample_rate);
 
-    // for now, only function of this method is to caluclate final audio size
-    estimated_bps = 2 /* int16 (2 bytes) frame */ * format->channels * format->sample_rate;
+    if (NULL == g_current_track->buffer)
+    {
+        // 2 * 2 * 441 * (track->duration / 10);
+        g_current_track->size = 2 * format->channels * (format->sample_rate / 100) * (g_current_track->duration / 10);
+        g_current_track->buffer = malloc(g_current_track->size);
+        g_current_track->buffer_pos = 0;
+    }
 
-    // notify caller
-    logger_message(ctx, "sp_cb_music_delivery: notify and leave\n");
-    pthread_cond_signal(&player_cond);
+    memcpy(&g_current_track->buffer[g_current_track->buffer_pos], frames, num_frames * 2);
+    g_current_track->buffer_pos += num_frames;
 
-    return 0;
+    return num_frames;
 }
 
 static sp_session_callbacks session_callbacks = {
@@ -380,41 +416,40 @@ const struct playlist* spotify_get_user_playlists(struct spotifs_context* ctx)
     return (const struct playlist*) sp_user_playlists;
 }
 
-int spotify_calculate_filezsize(struct spotifs_context* ctx, struct track* track)
+int spotify_buffer_track(struct spotifs_context* ctx, struct track* track)
 {
-    // clear bps
-    estimated_bps = 0;
+    logger_message(ctx, "%s", __FUNCTION__);
+    assert(g_current_track == NULL);
     sp_error err;
+    g_current_track = track;
 
     // load and play
     if(SP_ERROR_OK != (err = sp_session_player_load(ctx->spotify_session, track->spotify_track)))
     {
-        logger_message(ctx, "spotify_calculate_filezsize: sp_session_player_load: %s\n", sp_error_message(err));
-
-        track->size = -1;
+        logger_message(ctx, "spotify_buffer_track: sp_session_player_load: %s\n", sp_error_message(err));
+        g_current_track = NULL;
         return -1;
     }
 
     if (SP_ERROR_OK != (err = sp_session_player_play(ctx->spotify_session, 1)))
     {
-        logger_message(ctx, "spotify_calculate_filezsize: sp_session_player_play: %s\n", sp_error_message(err));
-
-        track->size = -1;
+        logger_message(ctx, "spotify_buffer_track: sp_session_player_play: %s\n", sp_error_message(err));
+        g_current_track = NULL;
         return -1;
     }
 
-    pthread_mutex_lock(&player_mutex);
+    return 0;
+}
 
-    if (estimated_bps <= 0)
-        pthread_cond_wait(&player_cond, &player_mutex);
+void spotify_buffer_stop(struct spotifs_context* ctx, struct track* track)
+{
+    (void) track;
 
-    track->size = estimated_bps * (track->duration / 1000);
-
-    // stop and upload
     sp_session_player_play(ctx->spotify_session, 0);
     sp_session_player_unload(ctx->spotify_session);
 
-    pthread_mutex_unlock(&player_mutex);
-
-    return track->size;
+    free(g_current_track->buffer);
+    g_current_track->buffer_pos = 0;
+    g_current_track->buffer = NULL;
+    g_current_track = NULL;
 }

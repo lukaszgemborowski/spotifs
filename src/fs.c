@@ -139,7 +139,8 @@ static int spotifs_getattr(const char *path, struct stat *stbuf)
         {
             if (track->size <= 0)
             {
-                track->size = spotify_calculate_filezsize(ctx, track);
+                // size estimation, 16bit sample * two channels * 44100 samples/s * duration (ms)
+                track->size = 2 * 2 * 441 * (track->duration / 10);
             }
 
             stbuf->st_size = track->size;
@@ -168,6 +169,7 @@ static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
     if (strcmp(path, "/") == 0)
     {
+        logger_message(ctx, "spotifs_readdir: root\n");
         // main layout of spotifs
         filler(buf, ".", NULL, 0);
         filler(buf, "..", NULL, 0);
@@ -176,17 +178,21 @@ static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     }
     else if(strcmp(path, s_library_path) == 0)
     {
+        logger_message(ctx, "spotifs_readdir: library path\n");
+
         filler(buf, ".", NULL, 0);
         filler(buf, "..", NULL, 0);
 
         const struct playlist* playlist = spotify_get_user_playlists(ctx);
         for (; playlist != NULL; playlist = playlist->next)
         {
+            logger_message(ctx, "spotifs_readdir: listing %s\n", playlist->title);
             filler(buf, playlist->title, NULL, 0);
         }
     }
     else if (library_playlist_path(path))
     {
+        logger_message(ctx, "spotifs_readdir: playlist path\n");
         filler(buf, ".", NULL, 0);
         filler(buf, "..", NULL, 0);
 
@@ -201,19 +207,163 @@ static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         {
             if (strcmp(playlist->title, playlist_name) == 0)
             {
+                logger_message(ctx, "spotifs_readdir: match\n");
+
                 // fetch song list from playlist
                 const struct track* track = playlist->tracks;
 
                 for (; track != NULL; track = track->next)
                 {
+                    logger_message(ctx, "spotifs_readdir: track: %s\n", track->title);
                     filler(buf, track->title, NULL, 0);
                 }
+
+                break;
             }
         }
     }
     else
     {
+        logger_message(ctx, "spotifs_readdir: ENOENT\n");
         return -ENOENT;
+    }
+
+    return 0;
+}
+
+int spotifs_open(const char *filename, struct fuse_file_info *info)
+{
+    struct spotifs_context* ctx = get_global_context;
+    char* dirc = strdup(filename);
+    char* path = dirname(dirc);
+
+    logger_message(ctx, "%s\n", __FUNCTION__);
+
+    if (library_playlist_path(path))
+    {
+        // get track
+        struct track* track = get_track_from_library(filename);
+
+        if (track)
+        {
+            track->refs ++;
+
+            if (track->refs == 1)
+            {
+                spotify_buffer_track(ctx, track);
+            }
+
+            sleep(1);
+
+            info->fh = (size_t)track;
+        }
+        else
+        {
+            free(dirc);
+            return -EACCES;
+        }
+    }
+    else
+    {
+        free(dirc);
+        return -EACCES;
+    }
+
+    free(dirc);
+    return 0;
+}
+
+int spotifs_release(const char *filename, struct fuse_file_info *info)
+{
+    struct spotifs_context* ctx = get_global_context;
+    char* dirc = strdup(filename);
+    char* path = dirname(dirc);
+
+    logger_message(ctx, "%s\n", __FUNCTION__);
+
+    if (library_playlist_path(path))
+    {
+        // get track
+        struct track* track = get_track_from_library(filename);
+        track->refs --;
+
+        if (0 == track->refs)
+        {
+            spotify_buffer_stop(ctx, track);
+        }
+
+        info->fh = 0;
+    }
+    else
+    {
+        free(dirc);
+        return -EACCES;
+    }
+
+    free(dirc);
+    return 0;
+}
+
+struct wave_header
+{
+    char mark[4];
+    int32_t overall_size;
+    char wave[4];
+    char fmt[4];
+    int32_t format_len;
+    int16_t format;
+    int16_t channels;
+    int32_t samplerate;
+    int32_t samplerate2;
+    int16_t channelrate;
+    int16_t bitspersample;
+    char data[4];
+    int32_t datasize;
+};
+
+static struct wave_header header = {
+    .mark = {'R', 'I', 'F', 'F'},
+    // .filesize
+    .wave = {'W', 'A', 'V', 'E'},
+    .fmt = {'f', 'm', 't', '\0'},
+    .format_len = 16,
+    .format = 1,
+    .channels = 2,
+    .samplerate = 44100,
+    .samplerate2 = 176400,
+    .channelrate = 4,
+    .bitspersample = 16,
+    .data = {'d', 'a', 't', 'a'}
+    // .datasize
+};
+
+int spotifs_read(const char *filename, char *buffer, size_t size, off_t offset, struct fuse_file_info *info)
+{
+    (void) filename;
+
+    struct spotifs_context* ctx = get_global_context;
+    struct track* track = (struct track *)info->fh;
+
+    logger_message(ctx, "%s\n", __FUNCTION__);
+
+    if (offset < 44)
+    {
+        header.overall_size = 44 + track->size;
+        header.datasize = track->size;
+    }
+
+    if (offset + size < 44)
+    {
+        memcpy(buffer, ((char *)&header) + offset, size);
+    }
+    else if (offset < 44)
+    {
+        memcpy(buffer, ((char *)&header) + offset, 44 - offset);
+        memcpy(buffer + 44 - offset, ((char *)track->buffer), size - (44 - offset));
+    }
+    else
+    {
+        memcpy(buffer, ((char *)track->buffer) + offset, size);
     }
 
     return 0;
@@ -224,6 +374,9 @@ struct fuse_operations spotifs_operations =
 {
     .getattr = spotifs_getattr,
     .readdir = spotifs_readdir,
+    .open = spotifs_open,
+    .release = spotifs_release,
+    .read = spotifs_read
 /*.open = hello_open,
 .read = hello_read,*/
 };
