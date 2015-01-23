@@ -26,6 +26,8 @@ struct playlist
 
 // this operation is synchronous so it may take a while to complete
 int spotify_connect(struct spotifs_context* ctx, const char *username, const char *password);
+
+// close spotify session
 void spotify_disconnect(struct spotifs_context* ctx);
 const struct playlist* spotify_get_user_playlists(struct spotifs_context* ctx);
 int spotify_buffer_track(struct spotifs_context* ctx, struct track* track);

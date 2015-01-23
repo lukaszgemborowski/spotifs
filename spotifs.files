@@ -9,3 +9,5 @@ src/logger.c
 src/spotify.h
 src/spotify.c
 src/context.c
+src/path_operations.h
+src/path_operations.c

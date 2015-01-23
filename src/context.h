@@ -3,7 +3,7 @@
 
 #include <stdio.h>
 #include <libspotify/api.h>
-#include <fuse.h>
+
 
 struct spotifs_context
 {
