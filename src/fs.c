@@ -18,16 +18,18 @@ static int spotifs_getattr(const char *path, struct stat *stbuf)
 
     if (strcmp(path, "/") == 0 || is_path_in_root(path) || is_library_playlist_path(path))
     {
-        // root directory
+        // one of directories in our filesystem,
+        // set standard mode for directory
         stbuf->st_mode = S_IFDIR | 0555;
         stbuf->st_nlink = 2;
     }
     else if(is_path_to_library_track(path))
     {
-        // track
+        // track which is regular file
         stbuf->st_mode = S_IFREG | 0444;
         stbuf->st_nlink = 1;
 
+        // get reference to track from spotify
         struct track* track = get_track_from_library(path);
 
         if (track)
@@ -38,15 +40,18 @@ static int spotifs_getattr(const char *path, struct stat *stbuf)
                 track->size = (2 * 2 * 441 * (track->duration / 10)) * 0.9;
             }
 
-            stbuf->st_size = track->size;
+            stbuf->st_size = track->size + 44; // ugly 44 bytes, WAV header size, need to be refactored
         }
         else
         {
-            stbuf->st_size = 1;
+            // can't find track in spotify, return error
+            stbuf->st_size = -1;
+            return -ENOENT;
         }
     }
     else
     {
+        // not handled, error
         return -ENOENT;
     }
 

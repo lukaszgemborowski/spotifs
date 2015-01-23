@@ -65,10 +65,10 @@ bool is_library_playlist_path(const char* path)
     return 1;
 }
 
-// check if provided path is path to song in user's playlist library,
-// it should have form of /library/my playlist/some song
 bool is_path_to_library_track(const char* path)
 {
+    // check if provided path is path to song in user's playlist library,
+    // it should have form of /library/my playlist/some song
     char* dc = strdup(path);
 
     // dirname of path should be proper playlist path
@@ -83,6 +83,7 @@ struct track* get_track_from_library(const char* path)
     struct spotifs_context* ctx = get_global_context;
 
     // path is in form of /library/playlist/song
+    // FIXME: memory leak detected!
     char *dc = strdup(path);
     char *bc = strdup(path);
 
