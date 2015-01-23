@@ -10,7 +10,7 @@ struct track
     int duration;
     int size;
     bool refs;
-    uint16_t* buffer;
+    uint8_t* buffer;
     size_t buffer_pos;
     struct sp_track* spotify_track;
     struct track* next;
@@ -30,5 +30,6 @@ void spotify_disconnect(struct spotifs_context* ctx);
 const struct playlist* spotify_get_user_playlists(struct spotifs_context* ctx);
 int spotify_buffer_track(struct spotifs_context* ctx, struct track* track);
 void spotify_buffer_stop(struct spotifs_context* ctx, struct track* track);
+void* spotify_buffer_read(struct spotifs_context* ctx, struct track* track, off_t offset, size_t size);
 
 #endif // SPOTIFS_SPOTIFY_H

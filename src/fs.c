@@ -78,12 +78,12 @@ struct track* get_track_from_library(const char* path)
     // iterate all playlists
     const struct playlist* playlist = spotify_get_user_playlists(ctx);
 
-    logger_message(ctx, "get_track_from_library: %s; track: %s\n", playlist_name, track_name);
+    //logger_message(ctx, "get_track_from_library: %s; track: %s\n", playlist_name, track_name);
     for (; playlist != NULL; playlist = playlist->next)
     {
         if (strcmp(playlist_name, playlist->title) == 0)
         {
-            logger_message(ctx, "get_track_from_library: playlist found\n");
+            //logger_message(ctx, "get_track_from_library: playlist found\n");
             // playlist found
             struct track* track = playlist->tracks;
 
@@ -92,7 +92,7 @@ struct track* get_track_from_library(const char* path)
                 // track found
                 if (strcmp(track_name, track->title) == 0)
                 {
-                    logger_message(ctx, "get_track_from_library: track found\n");
+                    //logger_message(ctx, "get_track_from_library: track found\n");
                     return track;
                 }
             }
@@ -140,7 +140,7 @@ static int spotifs_getattr(const char *path, struct stat *stbuf)
             if (track->size <= 0)
             {
                 // size estimation, 16bit sample * two channels * 44100 samples/s * duration (ms)
-                track->size = 2 * 2 * 441 * (track->duration / 10);
+                track->size = (2 * 2 * 441 * (track->duration / 10)) * 0.9;
             }
 
             stbuf->st_size = track->size;
@@ -192,7 +192,7 @@ static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     }
     else if (library_playlist_path(path))
     {
-        logger_message(ctx, "spotifs_readdir: playlist path\n");
+        //logger_message(ctx, "spotifs_readdir: playlist path\n");
         filler(buf, ".", NULL, 0);
         filler(buf, "..", NULL, 0);
 
@@ -207,14 +207,14 @@ static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         {
             if (strcmp(playlist->title, playlist_name) == 0)
             {
-                logger_message(ctx, "spotifs_readdir: match\n");
+                //logger_message(ctx, "spotifs_readdir: match\n");
 
                 // fetch song list from playlist
                 const struct track* track = playlist->tracks;
 
                 for (; track != NULL; track = track->next)
                 {
-                    logger_message(ctx, "spotifs_readdir: track: %s\n", track->title);
+                    //logger_message(ctx, "spotifs_readdir: track: %s\n", track->title);
                     filler(buf, track->title, NULL, 0);
                 }
 
@@ -237,7 +237,7 @@ int spotifs_open(const char *filename, struct fuse_file_info *info)
     char* dirc = strdup(filename);
     char* path = dirname(dirc);
 
-    logger_message(ctx, "%s\n", __FUNCTION__);
+    logger_message(ctx, "%s: %s\n", __FUNCTION__, filename);
 
     if (library_playlist_path(path))
     {
@@ -253,9 +253,8 @@ int spotifs_open(const char *filename, struct fuse_file_info *info)
                 spotify_buffer_track(ctx, track);
             }
 
-            sleep(1);
-
             info->fh = (size_t)track;
+            info->nonseekable = 1;
         }
         else
         {
@@ -279,7 +278,7 @@ int spotifs_release(const char *filename, struct fuse_file_info *info)
     char* dirc = strdup(filename);
     char* path = dirname(dirc);
 
-    logger_message(ctx, "%s\n", __FUNCTION__);
+    logger_message(ctx, "%s: %s\n", __FUNCTION__, filename);
 
     if (library_playlist_path(path))
     {
@@ -319,13 +318,13 @@ struct wave_header
     int16_t bitspersample;
     char data[4];
     int32_t datasize;
-};
+} __attribute__((packed));
 
 static struct wave_header header = {
     .mark = {'R', 'I', 'F', 'F'},
     // .filesize
     .wave = {'W', 'A', 'V', 'E'},
-    .fmt = {'f', 'm', 't', '\0'},
+    .fmt = {'f', 'm', 't', ' '},
     .format_len = 16,
     .format = 1,
     .channels = 2,
@@ -344,29 +343,55 @@ int spotifs_read(const char *filename, char *buffer, size_t size, off_t offset, 
     struct spotifs_context* ctx = get_global_context;
     struct track* track = (struct track *)info->fh;
 
-    logger_message(ctx, "%s\n", __FUNCTION__);
+    logger_message(ctx, "%s: %s, size: %d, offset: %d\n", __FUNCTION__, filename, size, offset);
 
-    if (offset < 44)
+    if (offset < sizeof(struct wave_header))
     {
-        header.overall_size = 44 + track->size;
+        // fill header informations
+        spotify_buffer_read(ctx, track, 0, 128);
+
+        header.overall_size = sizeof(struct wave_header) + track->size - 8;
         header.datasize = track->size;
     }
 
-    if (offset + size < 44)
+    if (offset >= track->size + sizeof(struct wave_header))
     {
+        // can't read beyond track size
+        return 0;
+    }
+
+    if (offset + size >= track->size + sizeof(struct wave_header))
+    {
+        size = track->size + sizeof(struct wave_header) - offset;
+    }
+
+    if (offset + size < sizeof(struct wave_header))
+    {
+        // read only within header range
         memcpy(buffer, ((char *)&header) + offset, size);
     }
-    else if (offset < 44)
+    else if (offset < sizeof(struct wave_header))
     {
-        memcpy(buffer, ((char *)&header) + offset, 44 - offset);
-        memcpy(buffer + 44 - offset, ((char *)track->buffer), size - (44 - offset));
+        // read part of header and part of track data
+
+        // read part of header
+        const size_t header_bytes_to_read = sizeof(struct wave_header) - offset;
+
+        memcpy(buffer, ((char *)&header) + offset, header_bytes_to_read);
+
+        // read track data
+        void *data = spotify_buffer_read(ctx, track, 0, size - header_bytes_to_read);
+
+        // copy data to buffer
+        memcpy(buffer + header_bytes_to_read, data, size - header_bytes_to_read);
     }
     else
     {
-        memcpy(buffer, ((char *)track->buffer) + offset, size);
+        void *data = spotify_buffer_read(ctx, track, offset - sizeof(struct wave_header), size);
+        memcpy(buffer, data, size);
     }
 
-    return 0;
+    return size;
 }
 
 // assemble list of callbacks
@@ -377,6 +402,4 @@ struct fuse_operations spotifs_operations =
     .open = spotifs_open,
     .release = spotifs_release,
     .read = spotifs_read
-/*.open = hello_open,
-.read = hello_read,*/
 };

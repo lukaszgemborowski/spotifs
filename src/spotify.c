@@ -9,9 +9,11 @@
 static pthread_mutex_t login_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t mainloop_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t player_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t current_track_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t login_cond = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t mainloop_cond = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t player_cond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t current_track_cond = PTHREAD_COND_INITIALIZER;
 
 // session callbacks
 static struct playlist* sp_user_playlists = NULL;
@@ -267,19 +269,31 @@ static struct track* g_current_track = NULL;
 
 int sp_cb_music_delivery(sp_session *session, const sp_audioformat *format, const void *frames, int num_frames)
 {
+    (void) session;
+
+    if (!g_current_track)
+        return num_frames;
+
     struct spotifs_context *ctx = get_global_context;
     //logger_message(ctx, "sp_cb_music_delivery: enter channels: %d, sample_rate: %d\n", format->channels, format->sample_rate);
 
     if (NULL == g_current_track->buffer)
     {
+        logger_message(ctx, "sp_cb_music_delivery: allocating buffer: channels: %d, sample rate: %d\n", format->channels, format->sample_rate);
+
         // 2 * 2 * 441 * (track->duration / 10);
+        // size is: 2 bytes (16 bit sample)  * channels * sample rate [sample/s] * duration [s] / 1000
+
         g_current_track->size = 2 * format->channels * (format->sample_rate / 100) * (g_current_track->duration / 10);
         g_current_track->buffer = malloc(g_current_track->size);
         g_current_track->buffer_pos = 0;
     }
 
-    memcpy(&g_current_track->buffer[g_current_track->buffer_pos], frames, num_frames * 2);
-    g_current_track->buffer_pos += num_frames;
+    const size_t data_bytes = num_frames * 2 * format->channels;
+    memcpy(&g_current_track->buffer[g_current_track->buffer_pos], frames, data_bytes);
+    g_current_track->buffer_pos += data_bytes;
+
+    pthread_cond_signal(&current_track_cond);
 
     return num_frames;
 }
@@ -418,9 +432,13 @@ const struct playlist* spotify_get_user_playlists(struct spotifs_context* ctx)
 
 int spotify_buffer_track(struct spotifs_context* ctx, struct track* track)
 {
-    logger_message(ctx, "%s", __FUNCTION__);
+    logger_message(ctx, "%s\n", __FUNCTION__);
+
     assert(g_current_track == NULL);
     sp_error err;
+    int ret = 0;
+
+    pthread_mutex_lock(&current_track_mutex);
     g_current_track = track;
 
     // load and play
@@ -428,22 +446,29 @@ int spotify_buffer_track(struct spotifs_context* ctx, struct track* track)
     {
         logger_message(ctx, "spotify_buffer_track: sp_session_player_load: %s\n", sp_error_message(err));
         g_current_track = NULL;
-        return -1;
+        ret = -1;
     }
 
     if (SP_ERROR_OK != (err = sp_session_player_play(ctx->spotify_session, 1)))
     {
         logger_message(ctx, "spotify_buffer_track: sp_session_player_play: %s\n", sp_error_message(err));
         g_current_track = NULL;
-        return -1;
+        ret = -1;
     }
 
-    return 0;
+    pthread_mutex_unlock(&current_track_mutex);
+
+    return ret;
 }
 
 void spotify_buffer_stop(struct spotifs_context* ctx, struct track* track)
 {
     (void) track;
+
+    logger_message(ctx, "%s\n", __FUNCTION__);
+    pthread_mutex_lock(&current_track_mutex);
+
+    assert(g_current_track != NULL);
 
     sp_session_player_play(ctx->spotify_session, 0);
     sp_session_player_unload(ctx->spotify_session);
@@ -452,4 +477,23 @@ void spotify_buffer_stop(struct spotifs_context* ctx, struct track* track)
     g_current_track->buffer_pos = 0;
     g_current_track->buffer = NULL;
     g_current_track = NULL;
+
+    pthread_mutex_unlock(&current_track_mutex);
+}
+
+void* spotify_buffer_read(struct spotifs_context* ctx, struct track* track, off_t offset, size_t size)
+{
+    pthread_mutex_lock(&current_track_mutex);
+
+    // wait for buffer
+    while (size + offset > track->buffer_pos)
+    {
+        logger_message(ctx, "%s: read(%d, %d), buffer_pos: %d\n", __FUNCTION__, offset, size, track->buffer_pos);
+        pthread_cond_wait(&current_track_cond, &current_track_mutex);
+    }
+
+    pthread_mutex_unlock(&current_track_mutex);
+
+    // return pointer to buffer + offset
+    return track->buffer + offset;
 }
