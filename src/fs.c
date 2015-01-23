@@ -16,23 +16,11 @@ static int spotifs_getattr(const char *path, struct stat *stbuf)
 
     memset(stbuf, 0, sizeof(struct stat));
 
-    if (strcmp(path, "/") == 0)
+    if (strcmp(path, "/") == 0 || is_path_in_root(path) || is_library_playlist_path(path))
     {
         // root directory
         stbuf->st_mode = S_IFDIR | 0555;
         stbuf->st_nlink = 2;
-    }
-    else if (is_path_in_root(path))
-    {
-        // directory in layout, eg Library or Layouts
-        stbuf->st_mode = S_IFDIR | 0555;
-        stbuf->st_nlink = 1;
-    }
-    else if (is_library_playlist_path(path))
-    {
-        // playlist in Library directory
-        stbuf->st_mode = S_IFDIR | 0555;
-        stbuf->st_nlink = 1;
     }
     else if(is_path_to_library_track(path))
     {
@@ -76,7 +64,6 @@ static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
     if (strcmp(path, "/") == 0)
     {
-        logger_message(ctx, "spotifs_readdir: root\n");
         // main layout of spotifs
         filler(buf, ".", NULL, 0);
         filler(buf, "..", NULL, 0);
@@ -91,21 +78,17 @@ static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     }
     else if(is_library_path(path))
     {
-        logger_message(ctx, "spotifs_readdir: library path\n");
-
         filler(buf, ".", NULL, 0);
         filler(buf, "..", NULL, 0);
 
         const struct playlist* playlist = spotify_get_user_playlists(ctx);
         for (; playlist != NULL; playlist = playlist->next)
         {
-            logger_message(ctx, "spotifs_readdir: listing %s\n", playlist->title);
             filler(buf, playlist->title, NULL, 0);
         }
     }
     else if (is_library_playlist_path(path))
     {
-        //logger_message(ctx, "spotifs_readdir: playlist path\n");
         filler(buf, ".", NULL, 0);
         filler(buf, "..", NULL, 0);
 
@@ -120,14 +103,11 @@ static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         {
             if (strcmp(playlist->title, playlist_name) == 0)
             {
-                //logger_message(ctx, "spotifs_readdir: match\n");
-
                 // fetch song list from playlist
                 const struct track* track = playlist->tracks;
 
                 for (; track != NULL; track = track->next)
                 {
-                    //logger_message(ctx, "spotifs_readdir: track: %s\n", track->title);
                     filler(buf, track->title, NULL, 0);
                 }
 
@@ -137,7 +117,6 @@ static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     }
     else
     {
-        logger_message(ctx, "spotifs_readdir: ENOENT\n");
         return -ENOENT;
     }
 
@@ -235,7 +214,7 @@ struct wave_header
 
 static struct wave_header header = {
     .mark = {'R', 'I', 'F', 'F'},
-    // .filesize
+    // .filesize - set in spotifs_read
     .wave = {'W', 'A', 'V', 'E'},
     .fmt = {'f', 'm', 't', ' '},
     .format_len = 16,
@@ -246,7 +225,7 @@ static struct wave_header header = {
     .channelrate = 4,
     .bitspersample = 16,
     .data = {'d', 'a', 't', 'a'}
-    // .datasize
+    // .datasize - set in spotifs_read
 };
 
 int spotifs_read(const char *filename, char *buffer, size_t size, off_t offset, struct fuse_file_info *info)
