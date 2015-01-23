@@ -83,8 +83,11 @@ static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
         const char **directories = get_root_layout();
 
-        while (directories)
+        while (*directories)
+        {
             filler(buf, *directories, NULL, 0);
+            directories ++;
+        }
     }
     else if(is_library_path(path))
     {

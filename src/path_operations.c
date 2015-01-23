@@ -96,12 +96,10 @@ struct track* get_track_from_library(const char* path)
     // iterate all playlists
     const struct playlist* playlist = spotify_get_user_playlists(ctx);
 
-    //logger_message(ctx, "get_track_from_library: %s; track: %s\n", playlist_name, track_name);
     for (; playlist != NULL; playlist = playlist->next)
     {
         if (strcmp(playlist_name, playlist->title) == 0)
         {
-            //logger_message(ctx, "get_track_from_library: playlist found\n");
             // playlist found
             struct track* track = playlist->tracks;
 
@@ -110,7 +108,6 @@ struct track* get_track_from_library(const char* path)
                 // track found
                 if (strcmp(track_name, track->title) == 0)
                 {
-                    //logger_message(ctx, "get_track_from_library: track found\n");
                     return track;
                 }
             }
