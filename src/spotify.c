@@ -267,7 +267,7 @@ static void sp_cb_notify_main_thread(sp_session *session)
 
 static struct track* g_current_track = NULL;
 
-int sp_cb_music_delivery(sp_session *session, const sp_audioformat *format, const void *frames, int num_frames)
+static int sp_cb_music_delivery(sp_session *session, const sp_audioformat *format, const void *frames, int num_frames)
 {
     (void) session;
 
@@ -298,18 +298,57 @@ int sp_cb_music_delivery(sp_session *session, const sp_audioformat *format, cons
     return num_frames;
 }
 
+static void sp_cb_connection_error(sp_session *session, sp_error error)
+{
+    (void)session;
+    struct spotifs_context *ctx = get_global_context;
+
+    logger_message(ctx, "%s: %s\n", __FUNCTION__, sp_error_message(error));
+}
+
+static void sp_cb_play_token_lost(sp_session *session)
+{
+    (void)session;
+    struct spotifs_context *ctx = get_global_context;
+
+    logger_message(ctx, "Play token lost\n");
+}
+
+static void sp_cb_log_message(sp_session *session, const char *data)
+{
+    (void)session;
+    struct spotifs_context *ctx = get_global_context;
+
+    logger_message(ctx, "%s: %s\n", __FUNCTION__, data);
+}
+
+static void sp_cb_end_of_track(sp_session *session)
+{
+    (void)session;
+    struct spotifs_context *ctx = get_global_context;
+
+    logger_message(ctx, "End of track\n");
+}
+
+static void streaming_error(sp_session *session, sp_error error)
+{
+    (void)session;
+    struct spotifs_context *ctx = get_global_context;
+
+    logger_message(ctx, "%s: %s\n", __FUNCTION__, sp_error_message(error));
+}
+
 static sp_session_callbacks session_callbacks = {
     .logged_in = &sp_cb_logged_in,
     .logged_out = &sp_cb_logged_out,
     .notify_main_thread = &sp_cb_notify_main_thread,
     .music_delivery = &sp_cb_music_delivery,
+    .connection_error = &sp_cb_connection_error,
+    .play_token_lost = &sp_cb_play_token_lost,
+    .log_message = &sp_cb_log_message,
+    .end_of_track = &sp_cb_end_of_track,
+    .streaming_error = &streaming_error,
     NULL,
-    /*
-    .music_delivery = &music_delivery,
-    .metadata_updated = &metadata_updated,
-    .play_token_lost = &play_token_lost,
-    .log_message = NULL,
-    .end_of_track = &end_of_track,*/
 };
 
 static sp_session_config spconfig = {
