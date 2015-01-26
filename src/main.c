@@ -42,13 +42,13 @@ int main(int argc, char **argv)
         print_usage_and_exit();
     }
 
-    struct spotifs_context* context = get_global_context;
-    memset(context, 0, sizeof(struct spotifs_context));
+    struct spotifs_context context;
+    memset(&context, 0, sizeof(struct spotifs_context));
 
     // login to spotify service
-    if (0 == spotify_connect(context, username, password))
+    if (0 == spotify_connect(&context, username, password))
     {
-        logger_message(context, "Connected to spotify\n");
+        logger_message(&context, "Connected to spotify\n");
 
         // create logger (aka. log file)
         /*if (0 != logger_open(&context))
@@ -65,10 +65,10 @@ int main(int argc, char **argv)
         arguments[2] = argv[optind];
         arguments[3] = NULL;
 
-        result = fuse_main(3, arguments, &spotifs_operations, context);
+        result = fuse_main(3, arguments, &spotifs_operations, &context);
 
         // logout and release spotify session
-        spotify_disconnect(context);
+        spotify_disconnect(&context);
     }
     else
     {
@@ -76,7 +76,7 @@ int main(int argc, char **argv)
         result = -1;
     }
 
-    logger_message(context, "Exiting..\n");
+    logger_message(&context, "Exiting..\n");
     //logger_close(context);
     return result;
 }

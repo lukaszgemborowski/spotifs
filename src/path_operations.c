@@ -78,10 +78,8 @@ bool is_path_to_library_track(const char* path)
     return ret;
 }
 
-struct track* get_track_from_library(const char* path)
+struct track* get_track_from_library(struct spotifs_context* ctx, const char* path)
 {
-    struct spotifs_context* ctx = get_global_context;
-
     // path is in form of /library/playlist/song
     // FIXME: memory leak detected!
     char *dc = strdup(path);

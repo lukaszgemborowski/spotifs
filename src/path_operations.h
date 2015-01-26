@@ -3,7 +3,7 @@
 
 #include "spotify.h"
 
-struct track* get_track_from_library(const char* path);
+struct track* get_track_from_library(struct spotifs_context* ctx, const char* path);
 const char** get_root_layout();
 
 bool is_library_playlist_path(const char* path);

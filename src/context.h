@@ -14,9 +14,4 @@ struct spotifs_context
     sp_playlistcontainer* spotify_playlist_container;
 };
 
-extern struct spotifs_context g_context;
-
-// define accessor macro for global context
-#define get_global_context &g_context;
-
 #endif // SPOTIFS_CONTEXT_H

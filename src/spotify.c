@@ -26,11 +26,10 @@ static pthread_t spotify_worker_thread_handle;
 // spotify worker thread
 static void* spotify_worker_thread(void *param)
 {
-    (void) param;
+    struct spotifs_context* ctx = param;
 
     int next_timeout;
     sp_error err;
-    struct spotifs_context* ctx = get_global_context;
 
     while (spotify_running)
     {
@@ -143,10 +142,8 @@ static sp_playlist_callbacks pl_callbacks = {
     .playlist_metadata_updated = &sp_cb_playlist_metadata_updated
 };
 
-static void initialize_playlists(sp_playlistcontainer *container)
+static void initialize_playlists(struct spotifs_context* ctx, sp_playlistcontainer *container)
 {
-    struct spotifs_context* ctx = get_global_context;
-
     // get playlist container and calculate number of current plylists
     const int num_playlists = sp_playlistcontainer_num_playlists(container);
 
@@ -189,15 +186,13 @@ static void initialize_playlists(sp_playlistcontainer *container)
 
 static void sp_cb_container_loaded(sp_playlistcontainer *container, void *userdata)
 {
-    (void)userdata;
-
-    struct spotifs_context* ctx = get_global_context;
+    struct spotifs_context* ctx = userdata;
 
     logger_message(ctx, "sp_cb_container_loaded\n");
 
     // container was loaded, refresh playlists
     pthread_mutex_lock(&login_mutex);
-    initialize_playlists(container);
+    initialize_playlists(ctx, container);
     pthread_cond_signal(&login_cond);
     pthread_mutex_unlock(&login_mutex);
 }
@@ -209,7 +204,7 @@ static sp_playlistcontainer_callbacks pc_callbacks = {
 // handle logged in event
 static void sp_cb_logged_in(sp_session *sess, sp_error error)
 {
-    struct spotifs_context* ctx = get_global_context;
+    struct spotifs_context* ctx = sp_session_userdata(sess);
 
     assert(ctx != NULL);
     assert(ctx->spotify_session == sess);
@@ -232,7 +227,7 @@ static void sp_cb_logged_in(sp_session *sess, sp_error error)
     ctx->spotify_playlist_container = sp_session_playlistcontainer(sess);
 
     // register callbacks
-    sp_playlistcontainer_add_callbacks(ctx->spotify_playlist_container, &pc_callbacks, NULL);
+    sp_playlistcontainer_add_callbacks(ctx->spotify_playlist_container, &pc_callbacks, ctx);
 
     // signal that login is completed
     pthread_cond_signal(&login_cond);
@@ -242,7 +237,7 @@ static void sp_cb_logged_in(sp_session *sess, sp_error error)
 // handle logged out event
 static void sp_cb_logged_out(sp_session *sess)
 {
-    struct spotifs_context* ctx = get_global_context;
+    struct spotifs_context* ctx = sp_session_userdata(sess);
     logger_message(ctx, "sp_cb_logged_out: Logged out.\n");
 
     pthread_mutex_lock(&mainloop_mutex);
@@ -273,7 +268,7 @@ static int sp_cb_music_delivery(sp_session *session, const sp_audioformat *forma
     if (!g_current_track)
         return num_frames;
 
-    struct spotifs_context *ctx = get_global_context;
+    struct spotifs_context *ctx = sp_session_userdata(session);
     //logger_message(ctx, "sp_cb_music_delivery: enter channels: %d, sample_rate: %d\n", format->channels, format->sample_rate);
 
     if (NULL == g_current_track->buffer)
@@ -300,7 +295,7 @@ static int sp_cb_music_delivery(sp_session *session, const sp_audioformat *forma
 static void sp_cb_connection_error(sp_session *session, sp_error error)
 {
     (void)session;
-    struct spotifs_context *ctx = get_global_context;
+    struct spotifs_context *ctx = sp_session_userdata(session);;
 
     logger_message(ctx, "%s: %s\n", __FUNCTION__, sp_error_message(error));
 }
@@ -308,7 +303,7 @@ static void sp_cb_connection_error(sp_session *session, sp_error error)
 static void sp_cb_play_token_lost(sp_session *session)
 {
     (void)session;
-    struct spotifs_context *ctx = get_global_context;
+    struct spotifs_context *ctx = sp_session_userdata(session);
 
     logger_message(ctx, "Play token lost\n");
 }
@@ -316,7 +311,7 @@ static void sp_cb_play_token_lost(sp_session *session)
 static void sp_cb_log_message(sp_session *session, const char *data)
 {
     (void)session;
-    struct spotifs_context *ctx = get_global_context;
+    struct spotifs_context *ctx = sp_session_userdata(session);
 
     logger_message(ctx, "%s: %s\n", __FUNCTION__, data);
 }
@@ -324,7 +319,7 @@ static void sp_cb_log_message(sp_session *session, const char *data)
 static void sp_cb_end_of_track(sp_session *session)
 {
     (void)session;
-    struct spotifs_context *ctx = get_global_context;
+    struct spotifs_context *ctx = sp_session_userdata(session);
 
     logger_message(ctx, "End of track\n");
 }
@@ -332,7 +327,7 @@ static void sp_cb_end_of_track(sp_session *session)
 static void streaming_error(sp_session *session, sp_error error)
 {
     (void)session;
-    struct spotifs_context *ctx = get_global_context;
+    struct spotifs_context *ctx = sp_session_userdata(session);
 
     logger_message(ctx, "%s: %s\n", __FUNCTION__, sp_error_message(error));
 }
@@ -361,7 +356,7 @@ static sp_session_config spconfig = {
     NULL,
 };
 
-int start_worker_thread()
+int start_worker_thread(struct spotifs_context *ctx)
 {
     assert(spotify_running == 0);
 
@@ -369,7 +364,7 @@ int start_worker_thread()
     spotify_running = 1;
     event_available = 1;
 
-    int ret = pthread_create(&spotify_worker_thread_handle, NULL, spotify_worker_thread, NULL);
+    int ret = pthread_create(&spotify_worker_thread_handle, NULL, spotify_worker_thread, ctx);
 
     if (ret)
     {
@@ -406,6 +401,7 @@ int spotify_connect(struct spotifs_context* ctx, const char *username, const cha
     }
 
     spconfig.application_key_size = g_appkey_size;
+    spconfig.userdata = ctx;
 
     // create spotify session
     sp_error sperr = sp_session_create(&spconfig, &ctx->spotify_session);
@@ -417,7 +413,7 @@ int spotify_connect(struct spotifs_context* ctx, const char *username, const cha
     }
 
     // we need to start worker thread at this point
-    if (0 != start_worker_thread())
+    if (0 != start_worker_thread(ctx))
     {
         logger_message(ctx, "spotify_connect: can't create worker thread\n");
         return -3;

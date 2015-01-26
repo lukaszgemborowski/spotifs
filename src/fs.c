@@ -32,7 +32,7 @@ static int spotifs_getattr(const char *path, struct stat *stbuf)
         stbuf->st_nlink = 1;
 
         // get reference to track from spotify
-        struct track* track = get_track_from_library(path);
+        struct track* track = get_track_from_library(ctx, path);
 
         if (track)
         {
@@ -144,7 +144,7 @@ int spotifs_open(const char *filename, struct fuse_file_info *info)
     if (is_library_playlist_path(path))
     {
         // get track from playlist
-        struct track* track = get_track_from_library(filename);
+        struct track* track = get_track_from_library(ctx, filename);
 
         if (track)
         {
@@ -184,7 +184,7 @@ int spotifs_release(const char *filename, struct fuse_file_info *info)
     if (is_library_playlist_path(path))
     {
         // get track
-        struct track* track = get_track_from_library(filename);
+        struct track* track = get_track_from_library(ctx, filename);
         track->refs --;
 
         if (0 == track->refs)
