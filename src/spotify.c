@@ -15,8 +15,7 @@ static pthread_cond_t mainloop_cond = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t player_cond = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t current_track_cond = PTHREAD_COND_INITIALIZER;
 
-// session callbacks
-static struct playlist* sp_user_playlists = NULL;
+static struct playlist* g_playlists = NULL;
 
 // worker thread variables
 static bool spotify_running = 0;
@@ -153,12 +152,12 @@ static void initialize_playlists(sp_playlistcontainer *container)
 
     if (0 == num_playlists)
     {
-        sp_user_playlists = NULL;
+        g_playlists = NULL;
         return;
     }
 
-    sp_user_playlists = calloc(1, sizeof(struct playlist));
-    struct playlist *current_playlist = sp_user_playlists;
+    g_playlists = calloc(1, sizeof(struct playlist));
+    struct playlist *current_playlist = g_playlists;
 
     int i = 0;
     for (i = 0; i < num_playlists; ++i)
@@ -438,7 +437,7 @@ int spotify_connect(struct spotifs_context* ctx, const char *username, const cha
     }
 
     // wait for playlist container to load
-    if (sp_user_playlists == NULL)
+    if (g_playlists == NULL)
     {
         pthread_cond_wait(&login_cond, &login_mutex);
     }
@@ -466,7 +465,7 @@ const struct playlist* spotify_get_user_playlists(struct spotifs_context* ctx)
 {
     (void) ctx;
 
-    return (const struct playlist*) sp_user_playlists;
+    return (const struct playlist*) g_playlists;
 }
 
 int spotify_buffer_track(struct spotifs_context* ctx, struct track* track)

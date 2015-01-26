@@ -65,7 +65,7 @@ int main(int argc, char **argv)
         arguments[2] = argv[optind];
         arguments[3] = NULL;
 
-        result = fuse_main(3, arguments, &spotifs_operations, &context);
+        result = fuse_main(3, arguments, &spotifs_operations, context);
 
         // logout and release spotify session
         spotify_disconnect(context);

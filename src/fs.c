@@ -9,9 +9,11 @@
 #include "logger.h"
 #include "fs.h"
 
+#define get_app_context fuse_get_context()->private_data;
+
 static int spotifs_getattr(const char *path, struct stat *stbuf)
 {
-    struct spotifs_context* ctx = get_global_context;
+    struct spotifs_context* ctx = get_app_context;
     logger_message(ctx, "spotifs_getattr: %s\n", path);
 
     memset(stbuf, 0, sizeof(struct stat));
@@ -66,7 +68,7 @@ static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     (void) offset;
     (void) fi;
 
-    struct spotifs_context* ctx = get_global_context;
+    struct spotifs_context* ctx = get_app_context;
     logger_message(ctx, "spotifs_readdir: %s\n", path);
 
     if (strcmp(path, "/") == 0)
@@ -132,7 +134,7 @@ static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
 int spotifs_open(const char *filename, struct fuse_file_info *info)
 {
-    struct spotifs_context* ctx = get_global_context;
+    struct spotifs_context* ctx = get_app_context;
     char* dirc = strdup(filename);
     char* path = dirname(dirc);
     int ret = 0;
@@ -172,7 +174,7 @@ int spotifs_open(const char *filename, struct fuse_file_info *info)
 
 int spotifs_release(const char *filename, struct fuse_file_info *info)
 {
-    struct spotifs_context* ctx = get_global_context;
+    struct spotifs_context* ctx = get_app_context;
     char* dirc = strdup(filename);
     char* path = dirname(dirc);
     int ret = 0;
@@ -239,7 +241,7 @@ int spotifs_read(const char *filename, char *buffer, size_t size, off_t offset, 
 {
     (void) filename;
 
-    struct spotifs_context* ctx = get_global_context;
+    struct spotifs_context* ctx = get_app_context;
     struct track* track = (struct track *)info->fh;
 
     logger_message(ctx, "%s: %s, size: %d, offset: %d\n", __FUNCTION__, filename, size, offset);
