@@ -37,6 +37,8 @@ static int spotifs_getattr(const char *path, struct stat *stbuf)
             if (track->size <= 0)
             {
                 // size estimation, 16bit sample * two channels * 44100 samples/s * duration (ms)
+                // I don't know if we can do any better at this point, to get proper track size
+                // we would need to start playback to get sample rate, channels count etc.
                 track->size = (2 * 2 * 441 * (track->duration / 10)) * 0.9;
             }
 
@@ -108,7 +110,7 @@ static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         {
             if (strcmp(playlist->title, playlist_name) == 0)
             {
-                // fetch song list from playlist
+                // fetch song list from playlist and fill directory entry
                 const struct track* track = playlist->tracks;
 
                 for (; track != NULL; track = track->next)
@@ -133,12 +135,13 @@ int spotifs_open(const char *filename, struct fuse_file_info *info)
     struct spotifs_context* ctx = get_global_context;
     char* dirc = strdup(filename);
     char* path = dirname(dirc);
+    int ret = 0;
 
     logger_message(ctx, "%s: %s\n", __FUNCTION__, filename);
 
     if (is_library_playlist_path(path))
     {
-        // get track
+        // get track from playlist
         struct track* track = get_track_from_library(filename);
 
         if (track)
@@ -155,18 +158,16 @@ int spotifs_open(const char *filename, struct fuse_file_info *info)
         }
         else
         {
-            free(dirc);
-            return -EACCES;
+            ret = -EACCES;
         }
     }
     else
     {
-        free(dirc);
-        return -EACCES;
+        ret = -EACCES;
     }
 
     free(dirc);
-    return 0;
+    return ret;
 }
 
 int spotifs_release(const char *filename, struct fuse_file_info *info)
@@ -174,6 +175,7 @@ int spotifs_release(const char *filename, struct fuse_file_info *info)
     struct spotifs_context* ctx = get_global_context;
     char* dirc = strdup(filename);
     char* path = dirname(dirc);
+    int ret = 0;
 
     logger_message(ctx, "%s: %s\n", __FUNCTION__, filename);
 
@@ -185,6 +187,7 @@ int spotifs_release(const char *filename, struct fuse_file_info *info)
 
         if (0 == track->refs)
         {
+            // stop buffering if there is no more refs
             spotify_buffer_stop(ctx, track);
         }
 
@@ -192,12 +195,11 @@ int spotifs_release(const char *filename, struct fuse_file_info *info)
     }
     else
     {
-        free(dirc);
-        return -EACCES;
+        ret = -EACCES;
     }
 
     free(dirc);
-    return 0;
+    return ret;
 }
 
 struct wave_header
@@ -242,9 +244,12 @@ int spotifs_read(const char *filename, char *buffer, size_t size, off_t offset, 
 
     logger_message(ctx, "%s: %s, size: %d, offset: %d\n", __FUNCTION__, filename, size, offset);
 
+    // read offset is within WAVE header
+    // in this case header should be ready
     if (offset < sizeof(struct wave_header))
     {
-        // fill header informations
+        // be sure that track is already buffered,
+        // this will ensure that size calculation is correct
         spotify_buffer_read(ctx, track, 0, 128);
 
         header.overall_size = sizeof(struct wave_header) + track->size - 8;
@@ -259,12 +264,14 @@ int spotifs_read(const char *filename, char *buffer, size_t size, off_t offset, 
 
     if (offset + size >= track->size + sizeof(struct wave_header))
     {
+        // client is trying to read more than overall file size,
+        // correct size variable.
         size = track->size + sizeof(struct wave_header) - offset;
     }
 
     if (offset + size < sizeof(struct wave_header))
     {
-        // read only within header range
+        // read only within header range, just memcpy header
         memcpy(buffer, ((char *)&header) + offset, size);
     }
     else if (offset < sizeof(struct wave_header))
@@ -284,6 +291,7 @@ int spotifs_read(const char *filename, char *buffer, size_t size, off_t offset, 
     }
     else
     {
+        // read request after header
         void *data = spotify_buffer_read(ctx, track, offset - sizeof(struct wave_header), size);
         memcpy(buffer, data, size);
     }
