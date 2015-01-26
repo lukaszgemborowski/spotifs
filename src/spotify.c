@@ -269,7 +269,6 @@ static int sp_cb_music_delivery(sp_session *session, const sp_audioformat *forma
         return num_frames;
 
     struct spotifs_context *ctx = sp_session_userdata(session);
-    //logger_message(ctx, "sp_cb_music_delivery: enter channels: %d, sample_rate: %d\n", format->channels, format->sample_rate);
 
     if (NULL == g_current_track->buffer)
     {
@@ -279,9 +278,15 @@ static int sp_cb_music_delivery(sp_session *session, const sp_audioformat *forma
         // size is: 2 bytes (16 bit sample)  * channels * sample rate [sample/s] * duration [s] / 1000
 
         g_current_track->size = 2 * format->channels * (format->sample_rate / 100) * (g_current_track->duration / 10);
+        g_current_track->sample_rate = format->sample_rate;
+        g_current_track->channels = format->channels;
         g_current_track->buffer = malloc(g_current_track->size);
         g_current_track->buffer_pos = 0;
     }
+
+    // assume that these values can't change
+    assert(g_current_track->sample_rate == format->sample_rate);
+    assert(g_current_track->channels == format->channels);
 
     const size_t data_bytes = num_frames * 2 * format->channels;
     memcpy(&g_current_track->buffer[g_current_track->buffer_pos], frames, data_bytes);

@@ -8,6 +8,8 @@ struct track
 {
     char* title;
     int duration;
+    int channels;
+    int sample_rate;
     int size;
     bool refs;
     uint8_t* buffer;
