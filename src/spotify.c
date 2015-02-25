@@ -210,6 +210,7 @@ static void sp_cb_logged_in(sp_session *sess, sp_error error)
     assert(ctx->spotify_session == sess);
 
     pthread_mutex_lock(&login_mutex);
+
     if (SP_ERROR_OK != error)
     {
         ctx->logged_in = 0;
@@ -221,13 +222,13 @@ static void sp_cb_logged_in(sp_session *sess, sp_error error)
         ctx->logged_in = 1;
 
         logger_message(ctx, "sp_cb_logged_in: Logged in\n");
+
+        // get and save playlist container
+        ctx->spotify_playlist_container = sp_session_playlistcontainer(sess);
+
+        // register callbacks
+        sp_playlistcontainer_add_callbacks(ctx->spotify_playlist_container, &pc_callbacks, ctx);
     }
-
-    // get and save playlist container
-    ctx->spotify_playlist_container = sp_session_playlistcontainer(sess);
-
-    // register callbacks
-    sp_playlistcontainer_add_callbacks(ctx->spotify_playlist_container, &pc_callbacks, ctx);
 
     // signal that login is completed
     pthread_cond_signal(&login_cond);
