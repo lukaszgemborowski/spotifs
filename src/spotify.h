@@ -3,19 +3,22 @@
 
 #include "context.h"
 #include <stdint.h>
+#include <pthread.h>
 
 struct track
 {
     char* title;
+    char* filename;
     int duration;
     int channels;
     int sample_rate;
     int size;
-    bool refs;
+    int refs;
     uint8_t* buffer;
     size_t buffer_pos;
     struct sp_track* spotify_track;
     struct track* next;
+    pthread_mutex_t lock;
 };
 
 struct playlist

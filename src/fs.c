@@ -14,7 +14,7 @@
 static int spotifs_getattr(const char *path, struct stat *stbuf)
 {
     struct spotifs_context* ctx = get_app_context;
-    logger_message(ctx, "spotifs_getattr: %s\n", path);
+    //logger_message(ctx, "spotifs_getattr: %s\n", path);
 
     memset(stbuf, 0, sizeof(struct stat));
 
@@ -152,7 +152,12 @@ int spotifs_open(const char *filename, struct fuse_file_info *info)
 
             if (track->refs == 1)
             {
-                spotify_buffer_track(ctx, track);
+                if (0 != spotify_buffer_track(ctx, track))
+                {
+                    // error
+                    track->refs = 0;
+                    ret = -EACCES;
+                }
             }
 
             info->fh = (size_t)track;

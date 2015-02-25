@@ -115,6 +115,12 @@ static void recreate_playlist(struct playlist* playlist)
         {
             sp_track *s_track = sp_playlist_track(playlist->spotify_playlist, i);
             track->title = strdup(sp_track_name(s_track));
+
+            // title + ".wav\0"
+            track->filename = malloc(strlen(track->title) + 5);
+            strcpy(track->filename, track->title);
+            strcat(track->filename, ".wav");
+
             track->duration = sp_track_duration(s_track);
             track->spotify_track = s_track;
             track->size = 0;
@@ -474,11 +480,11 @@ int spotify_buffer_track(struct spotifs_context* ctx, struct track* track)
 {
     logger_message(ctx, "%s\n", __FUNCTION__);
 
-    assert(g_current_track == NULL);
     sp_error err;
     int ret = 0;
 
     pthread_mutex_lock(&current_track_mutex);
+    assert(g_current_track == NULL);
     g_current_track = track;
 
     // load and play
