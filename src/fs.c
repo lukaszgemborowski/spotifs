@@ -18,7 +18,6 @@ static int spotifs_getattr(const char *path, struct stat *stbuf)
     memset(stbuf, 0, sizeof(struct stat));
 
     struct sfs_entry* entry = sfs_get(spotify_get_root(), path);
-    printf("DEBUG: %s: entry: %p\n", __func__, entry);
 
     if (entry) {
         if (entry->type & sfs_track) {
@@ -48,17 +47,14 @@ static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     logger_message(ctx, "%s: %s\n", __func__, path);
 
     dir = sfs_get(spotify_get_root(), path);
-    printf("DEBUG: %s: dir: %p, type: %d\n", __func__, dir, dir?dir->type:0);
 
     if (dir && dir->type & sfs_directory) {
-        printf("DEBUG: %s: dir: %s\n", __func__, dir->name);
         struct sfs_entry* item = dir->children;
 
         filler(buf, ".", NULL, 0);
         filler(buf, "..", NULL, 0);
 
         while (item) {
-            printf("DEBUG: %s:    -> %s\n", __func__, item->name);
             filler(buf, item->name, NULL, 0);
             item = item->next;
         }
