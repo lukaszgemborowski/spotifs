@@ -5,202 +5,130 @@
 #include <pthread.h>
 #include <string.h>
 #include <assert.h>
+#include "support.h"
+#include "sfs.h"
 
-static pthread_mutex_t login_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t mainloop_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t player_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct track* g_current_track = NULL;
 static pthread_mutex_t current_track_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t login_cond = PTHREAD_COND_INITIALIZER;
-static pthread_cond_t mainloop_cond = PTHREAD_COND_INITIALIZER;
-static pthread_cond_t player_cond = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t current_track_cond = PTHREAD_COND_INITIALIZER;
 
-static struct playlist* g_playlists = NULL;
+/* global playlist lock */
+struct sfs_entry_list {
+    struct sfs_entry first;
+    pthread_mutex_t lock;
+};
 
-// worker thread variables
-static bool spotify_running = 0;
-static bool event_available = 0;
-static bool event_disconnect = 0;
+static struct sfs_entry_list g_directory = {
+        .first = {
+                .type = sfs_directory,
+                .name = "/",
+                .size = 0,
+                .children = NULL
+        },
+        .lock = PTHREAD_MUTEX_INITIALIZER
+};
+
+/* worker thread variables */
 static pthread_t spotify_worker_thread_handle;
 
-// spotify worker thread
+struct sfs_entry* spotify_get_root() { return &g_directory.first; }
+
 static void* spotify_worker_thread(void *param)
 {
     struct spotifs_context* ctx = param;
 
-    int next_timeout;
+    int next_timeout = 0;
     sp_error err;
 
-    while (spotify_running)
+    while (ctx->worker_running)
     {
-        // wait for new event to be available
-        pthread_mutex_lock(&mainloop_mutex);
+        pthread_mutex_lock(&ctx->lock);
 
-        if (!event_available)
-        {
-            pthread_cond_wait(&mainloop_cond, &mainloop_mutex);
-        }
+        while (!ctx->spotify_event)
+            pthread_cond_wait(&ctx->change, &ctx->lock);
 
-        // clear event flag before processing event and unlocking mutex
-        event_available = 0;
+        ctx->spotify_event = 0;
 
-        // copy disconnect flag to stack and clear it
-        bool call_logout = event_disconnect;
-        event_disconnect = 0;
+        pthread_mutex_unlock(&ctx->lock);
 
-        pthread_mutex_unlock(&mainloop_mutex);
-
-        // process spotify event
         err = sp_session_process_events(ctx->spotify_session, &next_timeout);
 
-        // TODO: next_timeout should be considered
         if (SP_ERROR_OK != err)
         {
             logger_message(ctx, "spotify_worker_thread: error: %s.\n", sp_error_message(err));
-        }
-
-        if (call_logout)
-        {
-            // logout request
-        #if 0
-            // SIGSEGV after calling logout, WTF?
-            sp_session_logout(ctx->spotify_session);
-        #endif
-        }
-    }
-}
-
-static void replace_char(char *string, char a, char b)
-{
-    while(*string)
-    {
-        if (*string == a)
-            *string = b;
-
-        string ++;
-    }
-}
-
-static void recreate_playlist(struct playlist* playlist)
-{
-    // re-fetch playlist name
-    free (playlist->title);
-    playlist->title = strdup(sp_playlist_name(playlist->spotify_playlist));
-    replace_char(playlist->title, '/', '\\');
-
-    // free already allocated tracks
-    struct track* track = NULL;
-    for (track = playlist->tracks; track != NULL; track = track->next)
-    {
-        // free track title
-        free(track->title);
-
-        // release memory allocated for track
-        free(track);
-    }
-
-    playlist->tracks = NULL;
-
-    // read number of tracks
-    int num_tracks = sp_playlist_num_tracks(playlist->spotify_playlist);
-
-    if (num_tracks > 0)
-    {
-        // allocate first track
-        playlist->tracks = calloc(1, sizeof(struct track));
-        track = playlist->tracks;
-        int i = 0;
-
-        for (i = 0; i < num_tracks; i ++)
-        {
-            sp_track *s_track = sp_playlist_track(playlist->spotify_playlist, i);
-            track->title = strdup(sp_track_name(s_track));
-
-            // title + ".wav\0"
-            track->filename = malloc(strlen(track->title) + 5);
-            strcpy(track->filename, track->title);
-            strcat(track->filename, ".wav");
-
-            track->duration = sp_track_duration(s_track);
-            track->spotify_track = s_track;
-            track->size = 0;
-
-            replace_char(track->title, '/', '\\');
-
-            if (i < num_tracks-1)
-            {
-                track->next = calloc(1, sizeof(struct track));
-                track = track->next;
-            }
         }
     }
 }
 
 void sp_cb_playlist_metadata_updated(sp_playlist *pl, void *userdata)
 {
+    /* ignore */
     (void *)pl;
-    // forward call to recreate_playlist, basically we need to refresh all
-    // playlist data, including tracks
-    recreate_playlist(userdata);
+    (void *)userdata;
 }
 
 static sp_playlist_callbacks pl_callbacks = {
     .playlist_metadata_updated = &sp_cb_playlist_metadata_updated
 };
 
+
 static void initialize_playlists(struct spotifs_context* ctx, sp_playlistcontainer *container)
 {
-    // get playlist container and calculate number of current plylists
     const int num_playlists = sp_playlistcontainer_num_playlists(container);
+    int i, j;
+    (void *)ctx;
 
-    if (0 == num_playlists)
-    {
-        g_playlists = NULL;
+    struct sfs_entry *library = sfs_get(&g_directory.first, "/library");
+
+    if (!num_playlists || !library) {
         return;
     }
 
-    g_playlists = calloc(1, sizeof(struct playlist));
-    struct playlist *current_playlist = g_playlists;
+    for (i = 0; i < num_playlists; i++) {
+        struct sfs_entry *entry, *track_entry;
+        struct playlist *playlist = malloc(sizeof(struct playlist));
+        char *name;
+        int songs_count;
+        playlist->sp_playlist = sp_playlistcontainer_playlist (container, i);
+        sp_playlist_add_callbacks(playlist->sp_playlist, &pl_callbacks, playlist);
 
-    int i = 0;
-    for (i = 0; i < num_playlists; ++i)
-    {
-        // fetch playlist from spotify
-        sp_playlist *playlist =	sp_playlistcontainer_playlist (container, i);
+        name = replace_character(strdup(sp_playlist_name(playlist->sp_playlist)), '/', '_');
 
-        // save spotify playlist
-        current_playlist->spotify_playlist = playlist;
+        entry = sfs_add_child(library, name, sfs_directory | sfs_playlist);
+        entry->playlist = playlist;
 
-        // recreate playlist
-        recreate_playlist(current_playlist);
+        free(name);
 
-        // register callbacks
-        sp_playlist_add_callbacks(playlist, &pl_callbacks, current_playlist);
+        /* create song list for playlist */
+        songs_count = sp_playlist_num_tracks(playlist->sp_playlist);
 
-        // allocate next playlist
-        if (i < num_playlists-1)
-        {
-            current_playlist->next = calloc(1, sizeof(struct playlist));
-            current_playlist = current_playlist->next;
+        for (j = 0; j < songs_count; j++) {
+            struct track* track = malloc(sizeof(struct track));
+            track->spotify_track = sp_playlist_track(playlist->sp_playlist, j);
+
+            name = malloc(strlen(sp_track_name(track->spotify_track)) + 5);
+            strcpy(name, sp_track_name(track->spotify_track));
+            strcat(name, ".wav");
+            replace_character(name, '/', '_');
+
+            track_entry = sfs_add_child(entry, name, sfs_track);
+            track_entry->track = track;
+
+            free(name);
         }
-
-        // TODO: release
-        // sp_cb_playlist_metadata_updated
     }
-
 }
 
 static void sp_cb_container_loaded(sp_playlistcontainer *container, void *userdata)
 {
     struct spotifs_context* ctx = userdata;
 
-    logger_message(ctx, "sp_cb_container_loaded\n");
+    logger_message(ctx, "%s\n", __func__);
 
-    // container was loaded, refresh playlists
-    pthread_mutex_lock(&login_mutex);
+    /* container was loaded, refresh playlists */
+    pthread_mutex_lock(&g_directory.lock);
     initialize_playlists(ctx, container);
-    pthread_cond_signal(&login_cond);
-    pthread_mutex_unlock(&login_mutex);
+    pthread_mutex_unlock(&g_directory.lock);
 }
 
 static sp_playlistcontainer_callbacks pc_callbacks = {
@@ -215,58 +143,50 @@ static void sp_cb_logged_in(sp_session *sess, sp_error error)
     assert(ctx != NULL);
     assert(ctx->spotify_session == sess);
 
-    pthread_mutex_lock(&login_mutex);
+    pthread_mutex_lock(&ctx->lock);
 
     if (SP_ERROR_OK != error)
     {
-        ctx->logged_in = 0;
-
+        ctx->logged_in = -1;
         logger_message(ctx, "sp_cb_logged_in: got error: %s\n", sp_error_message((error)));
     }
     else
     {
         ctx->logged_in = 1;
-
         logger_message(ctx, "sp_cb_logged_in: Logged in\n");
-
-        // get and save playlist container
-        ctx->spotify_playlist_container = sp_session_playlistcontainer(sess);
-
-        // register callbacks
-        sp_playlistcontainer_add_callbacks(ctx->spotify_playlist_container, &pc_callbacks, ctx);
     }
 
     // signal that login is completed
-    pthread_cond_signal(&login_cond);
-    pthread_mutex_unlock(&login_mutex);
+    pthread_cond_signal(&ctx->change);
+    pthread_mutex_unlock(&ctx->lock);
+
+    logger_message(ctx, "%s: exit\n", __func__);
 }
 
-// handle logged out event
 static void sp_cb_logged_out(sp_session *sess)
 {
     struct spotifs_context* ctx = sp_session_userdata(sess);
     logger_message(ctx, "sp_cb_logged_out: Logged out.\n");
 
-    pthread_mutex_lock(&mainloop_mutex);
-    spotify_running = 0;
-    event_available = 1;
+    pthread_mutex_lock(&ctx->lock);
 
-    pthread_cond_signal(&mainloop_cond);
-    pthread_mutex_unlock(&mainloop_mutex);
+    /* notify worker thread to exit */
+    ctx->spotify_event = 1;
+    ctx->worker_running = 0;
+
+    pthread_cond_signal(&ctx->change);
+    pthread_mutex_unlock(&ctx->lock);
 }
 
-// handle main thread notification
 static void sp_cb_notify_main_thread(sp_session *session)
 {
-    (void) session;
+    struct spotifs_context* ctx = sp_session_userdata(session);
 
-    pthread_mutex_lock(&mainloop_mutex);
-    event_available = 1;
-    pthread_cond_signal(&mainloop_cond);
-    pthread_mutex_unlock(&mainloop_mutex);
+    pthread_mutex_lock(&ctx->lock);
+    ctx->spotify_event = 1;
+    pthread_cond_signal(&ctx->change);
+    pthread_mutex_unlock(&ctx->lock);
 }
-
-static struct track* g_current_track = NULL;
 
 static int sp_cb_music_delivery(sp_session *session, const sp_audioformat *format, const void *frames, int num_frames)
 {
@@ -325,7 +245,7 @@ static void sp_cb_log_message(sp_session *session, const char *data)
     (void)session;
     struct spotifs_context *ctx = sp_session_userdata(session);
 
-    logger_message(ctx, "%s: %s\n", __FUNCTION__, data);
+    //logger_message(ctx, "%s: %s\n", __FUNCTION__, data);
 }
 
 static void sp_cb_end_of_track(sp_session *session)
@@ -370,36 +290,32 @@ static sp_session_config spconfig = {
 
 int start_worker_thread(struct spotifs_context *ctx)
 {
-    assert(spotify_running == 0);
+    assert(ctx->worker_running == 0);
 
-    // set global controlling variables to 1 and start worker thread
-    spotify_running = 1;
-    event_available = 1;
+    ctx->worker_running = 1;
+    ctx->spotify_event = 1;
 
     int ret = pthread_create(&spotify_worker_thread_handle, NULL, spotify_worker_thread, ctx);
 
     if (ret)
     {
-        // clear variables on error
-        spotify_running = 0;
-        event_available = 0;
+        ctx->worker_running = 0;
+        ctx->spotify_event = 0;
     }
 
     return ret;
 }
 
-void stop_worker_thread()
+void stop_worker_thread(struct spotifs_context *ctx)
 {
-    assert(spotify_running == 1);
+    assert(ctx->worker_running == 1);
+    pthread_mutex_lock(&ctx->lock);
 
-    spotify_running = 0;
+    ctx->worker_running = 0;
+    ctx->spotify_event = 1;
 
-    // notify main thread about "new event", this will
-    // cause exit from conditional wait, one more loop and thread termination
-    pthread_mutex_lock(&mainloop_mutex);
-    event_available = 1;
-    pthread_cond_signal(&mainloop_cond);
-    pthread_mutex_unlock(&mainloop_mutex);
+    pthread_cond_signal(&ctx->change);
+    pthread_mutex_unlock(&ctx->lock);
 
     pthread_join(spotify_worker_thread_handle, NULL);
 }
@@ -408,52 +324,48 @@ int spotify_connect(struct spotifs_context* ctx, const char *username, const cha
 {
     if (ctx->spotify_session || ctx->logged_in)
     {
-        logger_message(ctx, "spotify_connect: session already created. Exiting.\n");
+        logger_message(ctx, "%s: session already created. Exiting.\n", __func__);
         return -1;
     }
+
+    sfs_add_child(&g_directory.first, "library", sfs_directory | sfs_container);
 
     spconfig.application_key_size = g_appkey_size;
     spconfig.userdata = ctx;
 
-    // create spotify session
-    sp_error sperr = sp_session_create(&spconfig, &ctx->spotify_session);
+    sp_error err = sp_session_create(&spconfig, &ctx->spotify_session);
 
-    if (SP_ERROR_OK != sperr)
+    if (SP_ERROR_OK != err)
     {
-        logger_message(ctx, "spotify_connect: sp_session_create failed: %s\n", sp_error_message(sperr));
+        logger_message(ctx, "%s: sp_session_create failed: %s\n", __func__, sp_error_message(err));
         return -2;
     }
 
-    // we need to start worker thread at this point
+    /* we need to start worker thread at this point */
     if (0 != start_worker_thread(ctx))
     {
-        logger_message(ctx, "spotify_connect: can't create worker thread\n");
+        logger_message(ctx, "%s: can't create worker thread\n", __func__);
         return -3;
     }
 
-    // login to spotify, this is asynchronous so we need to synchronise this call
-    // via mutex and conditional variable
+    /* login to spotify, this is asynchronous so we need to synchronise this call
+       via mutex and conditional variable */
     sp_session_login(ctx->spotify_session, username, password, 0, NULL);
 
-    pthread_mutex_lock(&login_mutex);
+    pthread_mutex_lock(&ctx->lock);
 
-    // check if we are logged in
-    if (ctx->logged_in != 1)
-    {
-        // if not, wait for signal
-        pthread_cond_wait(&login_cond, &login_mutex);
+    ctx->logged_in = 2;
+
+    while (2 == ctx->logged_in) {
+        pthread_cond_wait(&ctx->change, &ctx->lock);
     }
 
-    // wait for playlist container to load
-    if (g_playlists == NULL)
-    {
-        pthread_cond_wait(&login_cond, &login_mutex);
-    }
+    ctx->spotify_playlist_container = sp_session_playlistcontainer(ctx->spotify_session);
+    sp_playlistcontainer_add_callbacks(ctx->spotify_playlist_container, &pc_callbacks, ctx);
 
-    pthread_mutex_unlock(&login_mutex);
+    pthread_mutex_unlock(&ctx->lock);
 
-    // ctx->logged_in should be set by now in login callback, we can use it here
-    return ctx->logged_in?0:-1;
+    return ctx->logged_in;
 }
 
 void spotify_disconnect(struct spotifs_context* ctx)
@@ -464,21 +376,12 @@ void spotify_disconnect(struct spotifs_context* ctx)
         return;
     }
 
-    // request disconnection and wait for thread to join
-    event_disconnect = 1;
-    stop_worker_thread();
-}
-
-const struct playlist* spotify_get_user_playlists(struct spotifs_context* ctx)
-{
-    (void) ctx;
-
-    return (const struct playlist*) g_playlists;
+    stop_worker_thread(ctx);
 }
 
 int spotify_buffer_track(struct spotifs_context* ctx, struct track* track)
 {
-    logger_message(ctx, "%s\n", __FUNCTION__);
+    logger_message(ctx, "%s\n", __func__);
 
     sp_error err;
     int ret = 0;

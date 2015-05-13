@@ -45,9 +45,17 @@ int main(int argc, char **argv)
     struct spotifs_context context;
     memset(&context, 0, sizeof(struct spotifs_context));
 
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+
+    pthread_mutex_init(&context.lock, &attr);
+    pthread_cond_init(&context.change, NULL);
+
     // login to spotify service
-    if (0 == spotify_connect(&context, username, password))
-    {
+    if (spotify_connect(&context, username, password) < 0) {
+        result = -1;
+    } else {
         logger_message(&context, "Connected to spotify\n");
 
         // create logger (aka. log file)
@@ -69,11 +77,6 @@ int main(int argc, char **argv)
 
         // logout and release spotify session
         spotify_disconnect(&context);
-    }
-    else
-    {
-        // login failed, fail reason is already printed in logfile
-        result = -1;
     }
 
     logger_message(&context, "Exiting..\n");

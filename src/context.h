@@ -3,15 +3,19 @@
 
 #include <stdio.h>
 #include <libspotify/api.h>
-
+#include <pthread.h>
 
 struct spotifs_context
 {
     FILE* logfile;
-    bool logged_in;
-    bool worker_thread_running;
+    int logged_in;
+    int worker_running;
+    int spotify_event;
     sp_session* spotify_session;
     sp_playlistcontainer* spotify_playlist_container;
+
+    pthread_mutex_t lock;
+    pthread_cond_t change;
 };
 
 #endif // SPOTIFS_CONTEXT_H

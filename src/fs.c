@@ -2,64 +2,39 @@
 #include <stdlib.h>
 #include <libgen.h>
 #include <errno.h>
-
-#include "path_operations.h"
 #include "spotify.h"
 #include "context.h"
 #include "logger.h"
 #include "fs.h"
+#include "sfs.h"
 
 #define get_app_context fuse_get_context()->private_data;
 
 static int spotifs_getattr(const char *path, struct stat *stbuf)
 {
     struct spotifs_context* ctx = get_app_context;
-    //logger_message(ctx, "spotifs_getattr: %s\n", path);
+    logger_message(ctx, "%s: %s\n", __func__, path);
 
     memset(stbuf, 0, sizeof(struct stat));
 
-    if (strcmp(path, "/") == 0 || is_path_in_root(path) || is_library_playlist_path(path))
-    {
-        // one of directories in our filesystem,
-        // set standard mode for directory
-        stbuf->st_mode = S_IFDIR | 0555;
-        stbuf->st_nlink = 2;
-    }
-    else if(is_path_to_library_track(path))
-    {
-        // track which is regular file
-        stbuf->st_mode = S_IFREG | 0444;
-        stbuf->st_nlink = 1;
+    struct sfs_entry* entry = sfs_get(spotify_get_root(), path);
+    printf("DEBUG: %s: entry: %p\n", __func__, entry);
 
-        // get reference to track from spotify
-        struct track* track = get_track_from_library(ctx, path);
-
-        if (track)
-        {
-            if (track->size <= 0)
-            {
-                // size estimation, 16bit sample * two channels * 44100 samples/s * duration (ms)
-                // I don't know if we can do any better at this point, to get proper track size
-                // we would need to start playback to get sample rate, channels count etc.
-                track->size = (2 * 2 * 441 * (track->duration / 10)) * 0.9;
-            }
-
-            stbuf->st_size = track->size + 44; // ugly 44 bytes, WAV header size, need to be refactored
+    if (entry) {
+        if (entry->type & sfs_track) {
+            stbuf->st_mode = S_IFREG | 0444;
+            stbuf->st_nlink = 1;
+        } else if (entry->type & sfs_directory) {
+            stbuf->st_mode = S_IFDIR | 0555;
+            stbuf->st_nlink = 2;
         }
-        else
-        {
-            // can't find track in spotify, return error
-            stbuf->st_size = -1;
-            return -ENOENT;
-        }
-    }
-    else
-    {
-        // not handled, error
+
+        stbuf->st_size = entry->size;
+
+        return 0;
+    } else {
         return -ENOENT;
     }
-
-    return 0;
 }
 
 static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
@@ -68,145 +43,42 @@ static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     (void) offset;
     (void) fi;
 
+    struct sfs_entry* dir;
     struct spotifs_context* ctx = get_app_context;
-    logger_message(ctx, "spotifs_readdir: %s\n", path);
+    logger_message(ctx, "%s: %s\n", __func__, path);
 
-    if (strcmp(path, "/") == 0)
-    {
-        // main layout of spotifs
+    dir = sfs_get(spotify_get_root(), path);
+    printf("DEBUG: %s: dir: %p, type: %d\n", __func__, dir, dir?dir->type:0);
+
+    if (dir && dir->type & sfs_directory) {
+        printf("DEBUG: %s: dir: %s\n", __func__, dir->name);
+        struct sfs_entry* item = dir->children;
+
         filler(buf, ".", NULL, 0);
         filler(buf, "..", NULL, 0);
 
-        const char **directories = get_root_layout();
-
-        while (*directories)
-        {
-            filler(buf, *directories, NULL, 0);
-            directories ++;
+        while (item) {
+            printf("DEBUG: %s:    -> %s\n", __func__, item->name);
+            filler(buf, item->name, NULL, 0);
+            item = item->next;
         }
-    }
-    else if(is_library_path(path))
-    {
-        filler(buf, ".", NULL, 0);
-        filler(buf, "..", NULL, 0);
-
-        const struct playlist* playlist = spotify_get_user_playlists(ctx);
-        for (; playlist != NULL; playlist = playlist->next)
-        {
-            filler(buf, playlist->title, NULL, 0);
-        }
-    }
-    else if (is_library_playlist_path(path))
-    {
-        filler(buf, ".", NULL, 0);
-        filler(buf, "..", NULL, 0);
-
-        // this is playlist directory, eg. "/Library/My Playlist 3"
-        // playlist name is string after last slash '/'.
-        const char* playlist_name = strrchr(path, '/') + 1;
-
-        const struct playlist* playlist = spotify_get_user_playlists(ctx);
-
-        // find playlist in user's playlists
-        for (; playlist != NULL; playlist = playlist->next)
-        {
-            if (strcmp(playlist->title, playlist_name) == 0)
-            {
-                // fetch song list from playlist and fill directory entry
-                const struct track* track = playlist->tracks;
-
-                for (; track != NULL; track = track->next)
-                {
-                    filler(buf, track->title, NULL, 0);
-                }
-
-                break;
-            }
-        }
-    }
-    else
-    {
+    } else {
         return -ENOENT;
     }
-
-    return 0;
 }
 
 int spotifs_open(const char *filename, struct fuse_file_info *info)
 {
     struct spotifs_context* ctx = get_app_context;
-    char* dirc = strdup(filename);
-    char* path = dirname(dirc);
-    int ret = 0;
-
     logger_message(ctx, "%s: %s\n", __FUNCTION__, filename);
-
-    if (is_library_playlist_path(path))
-    {
-        // get track from playlist
-        struct track* track = get_track_from_library(ctx, filename);
-
-        if (track)
-        {
-            track->refs ++;
-
-            if (track->refs == 1)
-            {
-                if (0 != spotify_buffer_track(ctx, track))
-                {
-                    // error
-                    track->refs = 0;
-                    ret = -EACCES;
-                }
-            }
-
-            info->fh = (size_t)track;
-            info->nonseekable = 1;
-        }
-        else
-        {
-            ret = -EACCES;
-        }
-    }
-    else
-    {
-        ret = -EACCES;
-    }
-
-    free(dirc);
-    return ret;
+    return -EACCES;
 }
 
 int spotifs_release(const char *filename, struct fuse_file_info *info)
 {
     struct spotifs_context* ctx = get_app_context;
-    char* dirc = strdup(filename);
-    char* path = dirname(dirc);
-    int ret = 0;
-
     logger_message(ctx, "%s: %s\n", __FUNCTION__, filename);
-
-    if (is_library_playlist_path(path))
-    {
-        // get track
-        struct track* track = get_track_from_library(ctx, filename);
-        track->refs --;
-
-        if (0 == track->refs)
-        {
-            // stop buffering if there is no more refs
-            spotify_buffer_stop(ctx, track);
-        }
-
-        info->fh = 0;
-    }
-    else
-    {
-        ret = -EACCES;
-    }
-
-    free(dirc);
-    return ret;
+    return 0;
 }
 
 struct wave_header
@@ -244,6 +116,7 @@ static struct wave_header header = {
 
 int spotifs_read(const char *filename, char *buffer, size_t size, off_t offset, struct fuse_file_info *info)
 {
+    #if 0
     (void) filename;
 
     struct spotifs_context* ctx = get_app_context;
@@ -304,6 +177,9 @@ int spotifs_read(const char *filename, char *buffer, size_t size, off_t offset, 
     }
 
     return size;
+    #endif
+
+    return -EACCES;
 }
 
 // assemble list of callbacks

@@ -15,7 +15,7 @@ clean:
 	rm -f $(OBJ) spotifs
 
 spotifs: $(OBJ)
-	gcc -g -o $@ $^ $(LIBRARY_PATH) $(LIBRARIES)
+	gcc -ggdb -o $@ $^ $(LIBRARY_PATH) $(LIBRARIES)
 
 %.o: %.c
-	gcc -g -c $< -o $@ $(DEFINES) $(INCLUDE_PATH)
+	gcc -ggdb -c $< -o $@ $(DEFINES) $(INCLUDE_PATH)
