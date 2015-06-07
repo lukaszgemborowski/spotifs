@@ -31,5 +31,7 @@ struct sfs_entry* sfs_get(struct sfs_entry* root, const char* path);
 struct sfs_entry* sfs_add_child_entry(struct sfs_entry* root, struct sfs_entry* entry);
 struct sfs_entry* sfs_add_child(struct sfs_entry* root, const char* name, int type);
 struct sfs_entry* sfs_add_subdirectory(struct sfs_entry* root, const char* name);
+struct sfs_entry* sfs_get_child_by_name(struct sfs_entry* root, const char* name);
+struct sfs_entry* sfs_get_child_by_index(struct sfs_entry* root, int index);
 
 #endif //SPOTIFS_SFS_H

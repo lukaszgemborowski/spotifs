@@ -77,3 +77,35 @@ struct sfs_entry* sfs_add_subdirectory(struct sfs_entry* root, const char* name)
 
     return sfs_add_child_entry(root, entry);
 }
+
+struct sfs_entry* sfs_get_child_by_name(struct sfs_entry* root, const char* name)
+{
+    struct sfs_entry* entry = root->children;
+
+    while (entry) {
+        if (!strcmp(entry->name, name)) {
+            return entry;
+        } else {
+            entry = entry->next;
+        }
+    }
+
+    return NULL;
+}
+
+struct sfs_entry* sfs_get_child_by_index(struct sfs_entry* root, int index)
+{
+    struct sfs_entry* entry = root->children;
+    int i = 0;
+
+    while (entry) {
+        if (i == index) {
+            return entry;
+        } else {
+            entry = entry->next;
+            i++;
+        }
+    }
+
+    return NULL;
+}

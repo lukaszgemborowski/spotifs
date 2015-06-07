@@ -1,1 +1,5 @@
 *.o
+*.log
+.idea
+tmp/
+build/

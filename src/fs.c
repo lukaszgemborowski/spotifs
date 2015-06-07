@@ -10,10 +10,10 @@
 
 #define get_app_context fuse_get_context()->private_data;
 
-static int spotifs_getattr(const char *path, struct stat *stbuf)
+static int fuse_getattr(const char *path, struct stat *stbuf)
 {
     struct spotifs_context* ctx = get_app_context;
-    logger_message(ctx, "%s: %s\n", __func__, path);
+   /* logger_message(ctx, "%s: %s\n", __func__, path); */
 
     memset(stbuf, 0, sizeof(struct stat));
 
@@ -36,7 +36,7 @@ static int spotifs_getattr(const char *path, struct stat *stbuf)
     }
 }
 
-static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+static int fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     off_t offset, struct fuse_file_info *fi)
 {
     (void) offset;
@@ -48,71 +48,69 @@ static int spotifs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
     dir = sfs_get(spotify_get_root(), path);
 
+    logger_message(ctx, "%s: dir name %s\n", __func__, dir->name);
+
     if (dir && dir->type & sfs_directory) {
+
         struct sfs_entry* item = dir->children;
 
         filler(buf, ".", NULL, 0);
         filler(buf, "..", NULL, 0);
 
         while (item) {
+            logger_message(ctx, "%s: name %s\n", __func__, item->name);
             filler(buf, item->name, NULL, 0);
             item = item->next;
         }
+
+        return 0;
     } else {
         return -ENOENT;
     }
 }
 
-int spotifs_open(const char *filename, struct fuse_file_info *info)
+int fuse_open(const char *filename, struct fuse_file_info *info)
 {
     struct spotifs_context* ctx = get_app_context;
+    struct sfs_entry* track = sfs_get(spotify_get_root(), filename);
     logger_message(ctx, "%s: %s\n", __FUNCTION__, filename);
-    return -EACCES;
+
+    if (track && (track->type & sfs_track)) {
+        if (!track->track->refs) {
+            if (spotify_buffer_track(ctx, track->track) < 0) {
+                return -EIO;
+            }
+        }
+
+        track->track->refs ++;
+        info->fh = (uint64_t)track->track;
+        return 0;
+    } else {
+        return -ENOENT;
+    }
 }
 
-int spotifs_release(const char *filename, struct fuse_file_info *info)
+int fuse_release(const char *filename, struct fuse_file_info *info)
 {
     struct spotifs_context* ctx = get_app_context;
+    struct sfs_entry* track = sfs_get(spotify_get_root(), filename);
     logger_message(ctx, "%s: %s\n", __FUNCTION__, filename);
-    return 0;
+
+    if (track && (track->type & sfs_track)) {
+        track->track->refs --;
+
+        if (!track->track->refs) {
+            spotify_buffer_stop(ctx, track->track);
+        }
+
+        return 0;
+    } else {
+        return -ENOENT;
+    }
 }
 
-struct wave_header
+int fuse_read(const char *filename, char *buffer, size_t size, off_t offset, struct fuse_file_info *info)
 {
-    char mark[4];
-    int32_t overall_size;
-    char wave[4];
-    char fmt[4];
-    int32_t format_len;
-    int16_t format;
-    int16_t channels;
-    int32_t samplerate;
-    int32_t samplerate2;
-    int16_t channelrate;
-    int16_t bitspersample;
-    char data[4];
-    int32_t datasize;
-} __attribute__((packed));
-
-static struct wave_header header = {
-    .mark = {'R', 'I', 'F', 'F'},
-    // .filesize - set in spotifs_read
-    .wave = {'W', 'A', 'V', 'E'},
-    .fmt = {'f', 'm', 't', ' '},
-    .format_len = 16,
-    .format = 1,
-    .channels = 2,
-    .samplerate = 44100,
-    .samplerate2 = 176400,
-    .channelrate = 4,
-    .bitspersample = 16,
-    .data = {'d', 'a', 't', 'a'}
-    // .datasize - set in spotifs_read
-};
-
-int spotifs_read(const char *filename, char *buffer, size_t size, off_t offset, struct fuse_file_info *info)
-{
-    #if 0
     (void) filename;
 
     struct spotifs_context* ctx = get_app_context;
@@ -120,70 +118,15 @@ int spotifs_read(const char *filename, char *buffer, size_t size, off_t offset, 
 
     logger_message(ctx, "%s: %s, size: %d, offset: %d\n", __FUNCTION__, filename, size, offset);
 
-    // read offset is within WAVE header
-    // in this case header should be ready
-    if (offset < sizeof(struct wave_header))
-    {
-        // be sure that track is already buffered,
-        // this will ensure that size calculation is correct
-        spotify_buffer_read(ctx, track, 0, 128);
-
-        header.overall_size = sizeof(struct wave_header) + track->size - 8;
-        header.datasize = track->size;
-    }
-
-    if (offset >= track->size + sizeof(struct wave_header))
-    {
-        // can't read beyond track size
-        return 0;
-    }
-
-    if (offset + size >= track->size + sizeof(struct wave_header))
-    {
-        // client is trying to read more than overall file size,
-        // correct size variable.
-        size = track->size + sizeof(struct wave_header) - offset;
-    }
-
-    if (offset + size < sizeof(struct wave_header))
-    {
-        // read only within header range, just memcpy header
-        memcpy(buffer, ((char *)&header) + offset, size);
-    }
-    else if (offset < sizeof(struct wave_header))
-    {
-        // read part of header and part of track data
-
-        // read part of header
-        const size_t header_bytes_to_read = sizeof(struct wave_header) - offset;
-
-        memcpy(buffer, ((char *)&header) + offset, header_bytes_to_read);
-
-        // read track data
-        void *data = spotify_buffer_read(ctx, track, 0, size - header_bytes_to_read);
-
-        // copy data to buffer
-        memcpy(buffer + header_bytes_to_read, data, size - header_bytes_to_read);
-    }
-    else
-    {
-        // read request after header
-        void *data = spotify_buffer_read(ctx, track, offset - sizeof(struct wave_header), size);
-        memcpy(buffer, data, size);
-    }
-
-    return size;
-    #endif
-
-    return -EACCES;
+    return spotify_read(ctx, track, offset, size, buffer);
 }
 
 // assemble list of callbacks
 struct fuse_operations spotifs_operations =
 {
-    .getattr = spotifs_getattr,
-    .readdir = spotifs_readdir,
-    .open = spotifs_open,
-    .release = spotifs_release,
-    .read = spotifs_read
+    .getattr = fuse_getattr,
+    .readdir = fuse_readdir,
+    .open = fuse_open,
+    .release = fuse_release,
+    .read = fuse_read,
 };

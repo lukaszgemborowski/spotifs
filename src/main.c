@@ -49,7 +49,7 @@ int main(int argc, char **argv)
     pthread_mutexattr_init(&attr);
     pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
 
-    pthread_mutex_init(&context.lock, &attr);
+    pthread_mutex_init(&context.lock, NULL);
     pthread_cond_init(&context.change, NULL);
 
     // login to spotify service
