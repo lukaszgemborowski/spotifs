@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 size_t wave_header_size();
-size_t wave_size(int bytes, int channels, int rate, int seconds);
+size_t wave_size(int bytes, int channels, int rate, int ms);
 const char* wave_standard_header(int32_t data_size);
 
 #endif //SPOTIFS_WAVE_H

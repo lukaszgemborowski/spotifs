@@ -1,72 +1,43 @@
 #include "logger.h"
-#include <errno.h>
-#include <stdarg.h>
+#include <glib.h>
+#include <stdio.h>
 
-#define C_GREEN  "\x1B[32m"
-#define C_RED    "\x1B[31m"
-#define C_NORMAL "\x1B[0m"
+static FILE* log_file = NULL;
+static gboolean close_fd = FALSE;
 
-static const char* color_map[] = {
-    [logger_red] = C_RED,
-    [logger_green] = C_GREEN
-};
-
-int logger_open(struct spotifs_context* ctx)
+static
+void log_handler(
+    const gchar *log_domain,
+    GLogLevelFlags log_level,
+    const gchar *message,
+    gpointer user_data)
 {
-    ctx->logfile = fopen("spotifs.log", "w");
+    fprintf(log_file, "%s\n", message);
+}
 
-    if (ctx->logfile)
+void logger_set_file(const char* filename)
+{
+    log_file = fopen(filename, "a");
+
+    if (!log_file)
     {
-        logger_message(ctx, "Logger created\n");
-        return 0;
+        g_critical("Can't open logfile '%s'", filename);
     }
     else
     {
-        logger_message(ctx, "Logger cannot be created\n");
-        return -errno;
+        close_fd = TRUE;
+        g_log_set_handler(NULL, G_LOG_LEVEL_MASK, log_handler, NULL);
     }
 }
 
-void logger_close(struct spotifs_context* ctx)
+void logger_set_stream(FILE *fd)
 {
-    if (ctx->logfile)
-    {
-        fclose(ctx->logfile);
-        ctx->logfile = NULL;
-    }
+    log_file = fd;
+    close_fd = FALSE;
+    g_log_set_handler(NULL, G_LOG_LEVEL_MASK, log_handler, NULL);
 }
 
-static void write_log(FILE* file,  va_list arguments, const char* format)
+void logger_stop()
 {
-    vfprintf(file, format, arguments);
-}
-
-void logger_message(struct spotifs_context* ctx, const char *format, ...)
-{
-    va_list ap;
-    va_start(ap, format);
-
-    if (ctx->logfile)
-        write_log(ctx->logfile, ap, format);
-    else
-        write_log(stderr, ap, format);
-
-    va_end(ap);
-}
-
-void logger_message_color(struct spotifs_context* ctx, enum logger_color color, const char *format, ...)
-{
-    logger_message(ctx, "%s", color_map[color]);
-
-    va_list ap;
-    va_start(ap, format);
-
-    if (ctx->logfile)
-        write_log(ctx->logfile, ap, format);
-    else
-        write_log(stderr, ap, format);
-
-    va_end(ap);
-
-    logger_message(ctx, "%s", C_NORMAL);
+    if (log_file && close_fd) fclose(log_file);
 }

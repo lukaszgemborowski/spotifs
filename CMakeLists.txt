@@ -26,6 +26,8 @@ set(SOURCE_FILES
     src/wave.h)
 
 # libspotify
+set(CMAKE_C_FLAGS "-Wall -Werror")
+
 include_directories(${spotifs_SOURCE_DIR}/libspotify-12.1.51-Linux-x86_64-release/include)
 include_directories(${spotifs_SOURCE_DIR}/src)
 include_directories(${GLIB2_INCLUDE_DIRS})

@@ -42,8 +42,7 @@ int main(int argc, char **argv)
         print_usage_and_exit();
     }
 
-    struct spotifs_context context;
-    memset(&context, 0, sizeof(struct spotifs_context));
+    struct spotifs_context context = {0};
 
     pthread_mutexattr_t attr;
     pthread_mutexattr_init(&attr);
@@ -52,12 +51,12 @@ int main(int argc, char **argv)
     pthread_mutex_init(&context.lock, NULL);
     pthread_cond_init(&context.change, NULL);
 
+    logger_set_stream(stdout);
+
     // login to spotify service
     if (spotify_connect(&context, username, password) < 0) {
         result = -1;
     } else {
-        logger_message(&context, "Connected to spotify\n");
-
         // create logger (aka. log file)
         /*if (0 != logger_open(&context))
         {
@@ -79,7 +78,6 @@ int main(int argc, char **argv)
         spotify_disconnect(&context);
     }
 
-    logger_message(&context, "Exiting..\n");
-    //logger_close(context);
+    logger_stop();
     return result;
 }

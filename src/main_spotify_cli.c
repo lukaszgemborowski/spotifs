@@ -101,8 +101,8 @@ int main(int argc, char **argv)
         } else if (!strcmp(command, "watch")) {
             struct track* current = spotify_current(&spotify_context);
 
-            while (current->buffer.offset + current->buffer.size < current->size) {
-                g_print("Buffer, offset: %zu, size: %zu, track size: %d\n", current->buffer.offset, current->buffer.size, current->size);
+            while (current->buffer.pointer < current->size - 44 /* HACK :D */ ) {
+                g_print("Buffer, size: %zu, track size: %d\n", current->buffer.pointer, current->size);
                 sleep(1);
             }
         }

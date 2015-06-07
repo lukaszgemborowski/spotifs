@@ -102,6 +102,8 @@ static void* spotify_worker_thread(void *param)
             g_error("%s: error: '%s'", __func__, sp_error_message(err));
         }
     }
+
+    return NULL;
 }
 
 void sp_cb_playlist_metadata_updated(sp_playlist *pl, void *userdata)
@@ -117,7 +119,6 @@ static void initialize_playlists(struct spotifs_context* ctx, sp_playlistcontain
 {
     const int num_playlists = sp_playlistcontainer_num_playlists(container);
     int i, j;
-    (void *)ctx;
 
     struct sfs_entry *library = sfs_get(&g_directory.first, "/library");
 
@@ -157,7 +158,7 @@ static void initialize_playlists(struct spotifs_context* ctx, sp_playlistcontain
             track_entry = sfs_add_child(entry, name, sfs_track);
             track_entry->track = track;
 
-            track_entry->size = wave_size(2, 2, 44100, (ceil(track->duration/1000.) + 1)) + wave_header_size();
+            track_entry->size = wave_size(2, 2, 44100, track->duration) + wave_header_size();
 
             free(name);
         }
@@ -168,7 +169,7 @@ static void sp_cb_container_loaded(sp_playlistcontainer *container, void *userda
 {
     struct spotifs_context* ctx = userdata;
 
-    logger_message_color(ctx, logger_green, "%s\n", __func__);
+    g_debug("%s", __func__);
 
     /* container was loaded, refresh playlists */
     pthread_mutex_lock(&g_directory.lock);
@@ -182,16 +183,12 @@ static sp_playlistcontainer_callbacks pc_callbacks = {
 
 static void sp_cb_offline_status_updated(sp_session *session)
 {
-    struct spotifs_context* ctx = sp_session_userdata(session);
-
-    logger_message_color(ctx, logger_green, "%s: new status: %d\n", __func__, sp_session_connectionstate(session));
+    g_debug("%s: new status: %d", __func__, sp_session_connectionstate(session));
 }
 
 static void sp_cb_connectionstate_updated(sp_session* session)
 {
-    struct spotifs_context* ctx = sp_session_userdata(session);
-
-    logger_message_color(ctx, logger_green, "%s: new status: %d\n", __func__, sp_session_connectionstate(session));
+    g_debug("%s: new status: %d", __func__, sp_session_connectionstate(session));
 }
 
 // handle logged in event
@@ -226,7 +223,7 @@ static void sp_cb_logged_in(sp_session *sess, sp_error error)
         sp_playlistcontainer_add_callbacks(ctx->spotify_playlist_container, &pc_callbacks, ctx);
     }
 
-    logger_message(ctx, "%s: exit\n", __func__);
+    g_debug("%s: exit", __func__);
 }
 
 static void sp_cb_logged_out(sp_session *sess)
@@ -254,22 +251,8 @@ static void sp_cb_notify_main_thread(sp_session *session)
     pthread_mutex_unlock(&ctx->lock);
 }
 
-static void recreate_buffer(struct spotifs_context* ctx, struct track* track, off_t offset)
-{
-    free(track->buffer.data);
-
-    track->buffer.offset = offset;
-    track->buffer.size = 0;
-    track->buffer.capacity = track->size - offset;
-    track->buffer.data = calloc(1, track->buffer.capacity);
-}
-
 static int sp_cb_music_delivery(sp_session *session, const sp_audioformat *format, const void *frames, int num_frames)
 {
-    (void) session;
-
-    struct spotifs_context *ctx = sp_session_userdata(session);
-
     pthread_mutex_lock(&current_track_mutex);
 
     if (!g_current_track) {
@@ -279,20 +262,16 @@ static int sp_cb_music_delivery(sp_session *session, const sp_audioformat *forma
 
     if (!g_current_track->buffer.data)
     {
-        /* 2 * 2 * 441 * (track->duration / 10);
-         size is: 2 bytes (16 bit sample)  * channels * sample rate [sample/s] * duration [s] / 1000 */
+        g_current_track->buffer.capacity = wave_size(2, format->channels, format->sample_rate, g_current_track->duration);
+        g_current_track->buffer.pointer = 0;
+        g_current_track->buffer.data = malloc(g_current_track->buffer.capacity);
 
-        g_debug("%s: allocating buffer for %d seconds, track length is %dms",
-            __func__, (int)(ceil(g_current_track->duration/1000.) + 1), g_current_track->duration);
-
-        g_current_track->size = wave_size(2, format->channels, format->sample_rate, (ceil(g_current_track->duration/1000.) + 1));
+        g_current_track->size = g_current_track->buffer.capacity + wave_header_size();
         g_current_track->sample_rate = format->sample_rate;
         g_current_track->channels = format->channels;
 
-        recreate_buffer(ctx, g_current_track, 0);
-
-        g_debug("%s: allocating buffer: channels: %d, sample rate: %d, duration: %d, size: %d",
-            __func__, format->channels, format->sample_rate, g_current_track->duration, g_current_track->size);
+        g_debug("%s: allocating buffer: channels: %d, sample rate: %d, duration: %d, size: %zu",
+            __func__, format->channels, format->sample_rate, g_current_track->duration, g_current_track->buffer.capacity);
     }
 
     /* assume that these values can't change */
@@ -300,15 +279,15 @@ static int sp_cb_music_delivery(sp_session *session, const sp_audioformat *forma
     assert(g_current_track->channels == format->channels);
 
     size_t data_bytes = num_frames * 2 * format->channels;
-    const size_t space_left = g_current_track->buffer.capacity - g_current_track->buffer.size;
+    const size_t space_left = g_current_track->buffer.capacity - g_current_track->buffer.pointer;
 
     if (data_bytes > space_left) {
         g_warning("%s: write beyound the buffer, space left: %zubytes, data: %zubytes", __func__, space_left, data_bytes);
         data_bytes = space_left;
     }
 
-    memcpy(g_current_track->buffer.data + g_current_track->buffer.size, frames, data_bytes);
-    g_current_track->buffer.size += data_bytes;
+    memcpy(g_current_track->buffer.data + g_current_track->buffer.pointer, frames, data_bytes);
+    g_current_track->buffer.pointer += data_bytes;
 
     pthread_cond_signal(&current_track_cond);
     pthread_mutex_unlock(&current_track_mutex);
@@ -318,49 +297,35 @@ static int sp_cb_music_delivery(sp_session *session, const sp_audioformat *forma
 
 static void sp_cb_connection_error(sp_session *session, sp_error error)
 {
-    (void)session;
-    struct spotifs_context *ctx = sp_session_userdata(session);;
-
-    logger_message_color(ctx, logger_red, "%s: %s\n", __func__, sp_error_message(error));
+    g_warning("%s: %s", __func__, sp_error_message(error));
 }
 
 static void sp_cb_play_token_lost(sp_session *session)
 {
-    (void)session;
-    struct spotifs_context *ctx = sp_session_userdata(session);
-
-    logger_message_color(ctx, logger_red, "%s: Play token lost\n", __func__);
+    g_info("%s: Play token lost", __func__);
 }
 
 static void sp_cb_log_message(sp_session *session, const char *data)
 {
-    (void)session;
-    struct spotifs_context *ctx = sp_session_userdata(session);
-
-    /* logger_message_color(ctx, logger_green, "%s: %s\n", __FUNCTION__, data); */
 }
 
 static void sp_cb_end_of_track(sp_session *session)
 {
-    (void)session;
     struct spotifs_context *ctx = sp_session_userdata(session);
 
     pthread_mutex_lock(&current_track_mutex);
-    /* mark buffer as full */
-    g_current_track->buffer.size = g_current_track->buffer.capacity;
+    /* mark buffer as full & stop buffering */
+    g_current_track->buffer.pointer = g_current_track->buffer.capacity;
     sp_session_player_play(ctx->spotify_session, 0);
     pthread_mutex_unlock(&current_track_mutex);
 
-    logger_message_color(ctx, logger_green, "End of track\n");
+    g_debug("End of track");
 
 }
 
 static void streaming_error(sp_session *session, sp_error error)
 {
-    (void)session;
-    struct spotifs_context *ctx = sp_session_userdata(session);
-
-    logger_message_color(ctx, logger_green, "%s: %s\n", __func__, sp_error_message(error));
+    g_error("%s: %s", __func__, sp_error_message(error));
 }
 
 static sp_session_callbacks session_callbacks = {
@@ -423,7 +388,7 @@ void stop_worker_thread(struct spotifs_context *ctx)
 
 int spotify_connect(struct spotifs_context* ctx, const char *username, const char *password)
 {
-    logger_message(ctx, __func__);
+    g_debug(__func__);
 
     if (ctx->spotify_session || ctx->logged_in)
     {
@@ -440,7 +405,7 @@ int spotify_connect(struct spotifs_context* ctx, const char *username, const cha
 
     if (SP_ERROR_OK != err)
     {
-        g_critical("%s: sp_session_create failed: %s", __func__, sp_error_message(err));
+        g_error("%s: sp_session_create failed: %s", __func__, sp_error_message(err));
         return -2;
     }
 
@@ -451,7 +416,7 @@ int spotify_connect(struct spotifs_context* ctx, const char *username, const cha
     /* we need to start worker thread at this point */
     if (0 != start_worker_thread(ctx))
     {
-        logger_message(ctx, "%s: can't create worker thread\n", __func__);
+        g_error("%s: can't create worker thread", __func__);
         return -3;
     }
 
@@ -470,18 +435,16 @@ int spotify_connect(struct spotifs_context* ctx, const char *username, const cha
 
     pthread_mutex_unlock(&ctx->lock);
 
-    logger_message(ctx, "%s: exit\n", __func__);
-
     return ctx->logged_in;
 }
 
 void spotify_disconnect(struct spotifs_context* ctx)
 {
-    logger_message(ctx, __func__);
+    g_debug(__func__);
 
     if (!ctx->spotify_session || !ctx->logged_in)
     {
-        logger_message(ctx, "spotify_connect: session is not created.\n");
+        g_warning("spotify_connect: session is not created.");
         return;
     }
 
@@ -490,7 +453,7 @@ void spotify_disconnect(struct spotifs_context* ctx)
 
 int spotify_buffer_track(struct spotifs_context* ctx, struct track* track)
 {
-    logger_message(ctx, "%s\n", __func__);
+    g_debug(__func__);
 
     sp_error err;
     int ret = 0;
@@ -508,14 +471,14 @@ int spotify_buffer_track(struct spotifs_context* ctx, struct track* track)
     // load and play
     if(SP_ERROR_OK != (err = sp_session_player_load(ctx->spotify_session, track->spotify_track)))
     {
-        logger_message(ctx, "spotify_buffer_track: sp_session_player_load: %s\n", sp_error_message(err));
+        g_error("spotify_buffer_track: sp_session_player_load: %s", sp_error_message(err));
         g_current_track = NULL;
         ret = -1;
     }
 
     if (SP_ERROR_OK != (err = sp_session_player_play(ctx->spotify_session, 1)))
     {
-        logger_message(ctx, "spotify_buffer_track: sp_session_player_play: %s\n", sp_error_message(err));
+        g_error("spotify_buffer_track: sp_session_player_play: %s", sp_error_message(err));
         g_current_track = NULL;
         ret = -1;
     }
@@ -529,7 +492,7 @@ void spotify_buffer_stop(struct spotifs_context* ctx, struct track* track)
 {
     (void) track;
 
-    logger_message(ctx, "%s\n", __FUNCTION__);
+    g_debug(__func__);
     pthread_mutex_lock(&current_track_mutex);
 
     assert(g_current_track != NULL);
@@ -544,27 +507,13 @@ void spotify_buffer_stop(struct spotifs_context* ctx, struct track* track)
     pthread_mutex_unlock(&current_track_mutex);
 }
 
-static size_t bytes_per_second(struct track* track)
-{
-    return track->sample_rate * track->channels * 2;
-}
-
-static size_t offset_to_second(struct track* track, off_t offset)
-{
-    if (offset)
-        return offset / bytes_per_second(track);
-    else
-        return 0;
-}
-
 int spotify_read(struct spotifs_context* ctx, struct track* track, off_t offset, size_t size, char *buffer)
 {
     int copied = 0;
-    int current_second;
 
     pthread_mutex_lock(&current_track_mutex);
 
-    g_debug("%s: read(%zu, %zu), buffer(%zu, %zu)\n", __func__, offset, size, g_current_track->buffer.offset, g_current_track->buffer.size);
+    g_debug("%s: read(%zu, %zu), buffer(%zu, %zu)\n", __func__, offset, size, g_current_track->buffer.pointer, g_current_track->buffer.capacity);
 
     /* wait for any data, proper size will be calculated after first data arrive */
     while(!g_current_track->buffer.data) {
@@ -594,44 +543,22 @@ int spotify_read(struct spotifs_context* ctx, struct track* track, off_t offset,
             memcpy(buffer, wave_standard_header(g_current_track->size) + offset, copied);
 
             buffer += copied;
-            offset = wave_header_size();
+            offset = 0;
             size -= copied;
         }
     } else {
         offset -= wave_header_size();
     }
 
-    current_second = offset_to_second(g_current_track, offset);
-
-    /* detect seek:
-     * seek back if read offset is less than buffer offset,
-     * seek forward if read offset is at least ~2 seconds later than current buffer offset */
-    if (offset < g_current_track->buffer.offset)
-    {
-        g_debug("need to seek back, current offset is %zu, new offset is %zu, seek to: %i", g_current_track->buffer.offset, offset, current_second * 1000);
-        recreate_buffer(ctx, g_current_track, current_second * bytes_per_second(track));
-        sp_session_player_seek(ctx->spotify_session, current_second * 1000);
-    }
-    else if (offset > g_current_track->buffer.offset + g_current_track->buffer.size + (1024 * 1024))
-    {
-
-        g_debug("need to seek forward, current offset is %zu, new offset is %zu, seek to: %i", g_current_track->buffer.offset, offset, current_second * 1000);
-        recreate_buffer(ctx, g_current_track, current_second * bytes_per_second(track));
-        sp_session_player_seek(ctx->spotify_session, current_second * 1000);
-    }
-
     /* wait for data if needed */
-    while((offset + size > g_current_track->buffer.offset + g_current_track->buffer.size)) {
+    while(offset + size > g_current_track->buffer.pointer) {
         pthread_cond_wait(&current_track_cond, &current_track_mutex);
     }
 
-    /* copy remaining part from buffer */
-    if (offset + size <= g_current_track->buffer.offset + g_current_track->buffer.size) {
-        memcpy(buffer, g_current_track->buffer.data + (offset - g_current_track->buffer.offset), size);
-        copied = size;
-    }
+    copied += size;
+    memcpy(buffer, g_current_track->buffer.data + offset, size);
 
-    logger_message_color(ctx, logger_red, "%s\n", __func__);
+    g_debug("%s", __func__);
 
     pthread_mutex_unlock(&current_track_mutex);
 

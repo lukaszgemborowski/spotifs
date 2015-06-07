@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <libgen.h>
 #include <errno.h>
+#include <glib.h>
 #include "spotify.h"
 #include "context.h"
 #include "logger.h"
@@ -12,9 +13,6 @@
 
 static int fuse_getattr(const char *path, struct stat *stbuf)
 {
-    struct spotifs_context* ctx = get_app_context;
-   /* logger_message(ctx, "%s: %s\n", __func__, path); */
-
     memset(stbuf, 0, sizeof(struct stat));
 
     struct sfs_entry* entry = sfs_get(spotify_get_root(), path);
@@ -43,12 +41,11 @@ static int fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     (void) fi;
 
     struct sfs_entry* dir;
-    struct spotifs_context* ctx = get_app_context;
-    logger_message(ctx, "%s: %s\n", __func__, path);
+    g_debug("%s: %s", __func__, path);
 
     dir = sfs_get(spotify_get_root(), path);
 
-    logger_message(ctx, "%s: dir name %s\n", __func__, dir->name);
+    g_debug("%s: dir name %s", __func__, dir->name);
 
     if (dir && dir->type & sfs_directory) {
 
@@ -58,7 +55,7 @@ static int fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         filler(buf, "..", NULL, 0);
 
         while (item) {
-            logger_message(ctx, "%s: name %s\n", __func__, item->name);
+            g_debug("%s: name %s", __func__, item->name);
             filler(buf, item->name, NULL, 0);
             item = item->next;
         }
@@ -73,7 +70,7 @@ int fuse_open(const char *filename, struct fuse_file_info *info)
 {
     struct spotifs_context* ctx = get_app_context;
     struct sfs_entry* track = sfs_get(spotify_get_root(), filename);
-    logger_message(ctx, "%s: %s\n", __FUNCTION__, filename);
+    g_debug("%s: %s", __func__, filename);
 
     if (track && (track->type & sfs_track)) {
         if (!track->track->refs) {
@@ -94,7 +91,7 @@ int fuse_release(const char *filename, struct fuse_file_info *info)
 {
     struct spotifs_context* ctx = get_app_context;
     struct sfs_entry* track = sfs_get(spotify_get_root(), filename);
-    logger_message(ctx, "%s: %s\n", __FUNCTION__, filename);
+    g_debug("%s: %s", __func__, filename);
 
     if (track && (track->type & sfs_track)) {
         track->track->refs --;
@@ -116,7 +113,7 @@ int fuse_read(const char *filename, char *buffer, size_t size, off_t offset, str
     struct spotifs_context* ctx = get_app_context;
     struct track* track = (struct track *)info->fh;
 
-    logger_message(ctx, "%s: %s, size: %d, offset: %d\n", __FUNCTION__, filename, size, offset);
+    g_debug("%s: %s, size: %zu, offset: %zu", __func__, filename, size, offset);
 
     return spotify_read(ctx, track, offset, size, buffer);
 }

@@ -1,4 +1,5 @@
 #include "wave.h"
+#include <assert.h>
 
 struct wave_header
 {
@@ -46,7 +47,8 @@ const char* wave_standard_header(int32_t data_size)
     return (const char*)&static_header;
 }
 
-size_t wave_size(int bytes, int channels, int rate, int seconds)
+size_t wave_size(int bytes, int channels, int rate, int ms)
 {
-    return bytes * channels * rate * seconds;
+    assert (!(ms % 1000));
+    return bytes * channels * rate * (ms / 1000);
 }

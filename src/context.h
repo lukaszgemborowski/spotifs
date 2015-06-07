@@ -7,7 +7,6 @@
 
 struct spotifs_context
 {
-    FILE* logfile;
     int logged_in;
     int worker_running;
     int spotify_event;

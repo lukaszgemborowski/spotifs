@@ -11,8 +11,7 @@ struct sfs_entry;
 struct stream_buffer
 {
     char* data;
-    off_t size;
-    off_t offset;
+    off_t pointer;
     size_t capacity;
 };
 
