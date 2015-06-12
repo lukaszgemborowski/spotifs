@@ -1,6 +1,16 @@
 # spotifs
 Pseudo FS for accessing your Spotify music
 
+## features
+Implemented:
+- browsing your playlists
+- reading files (playback in external players) - partially done
+
+Planned:
+- browsing music (artists, albums, etc)
+- creating playlists
+- maybe something more :)
+
 ## build
 Building process is quite simple:
 ```
